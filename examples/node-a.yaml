@@ -1,0 +1,33 @@
+# Coalition node A — nation ALFA. Run:  jdssarrow run --config examples/node-a.yaml
+identity:
+  node_id: node-a
+  callsign: ALFA-1
+  unit: 1PL/A/1-501
+  nation: BEL
+  role: team_leader
+
+plugins:
+  codec: xml         # Vol II — MIP-3.1-variant XML
+  transport: udp     # Vol IV — real UDP multicast
+  security: psk      # Vol I  — HMAC-SHA256 with shared key
+  bearer: simulated  # Vol III
+  allocator: default # Vol V  — derives the multicast group from network_id
+
+network:
+  network_id: coalition-alpha
+  repeat: 3
+  psk: shared-coalition-secret
+
+classification:
+  level: 1            # NATO RESTRICTED
+  releasable_to: REL BEL NLD
+
+connections:
+  policy_authority: node-a   # this node is the coalition policy authority
+  # per-authority Ed25519 keys: node-a holds the private key and signs policy updates
+  authority_private_key: 5d50ebec6a2e69dcb81ea9557add25c761e2aff8ab63a4f958db08fa07055cf5
+  authority_public_key: deebe67c48d3c61f3dbe40074e752b4457cf79c2286079a9c0a78649416f6d4d
+
+web:
+  port: 8000
+  peer_timeout_s: 15

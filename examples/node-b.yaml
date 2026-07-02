@@ -1,0 +1,31 @@
+# Coalition node B — nation BRAVO. Run:  jdssarrow run --config examples/node-b.yaml --casevac
+identity:
+  node_id: node-b
+  callsign: BRAVO-2
+  unit: 2PL/B/2-502
+  nation: NLD
+  role: medic
+
+plugins:
+  codec: xml
+  transport: udp
+  security: psk
+  bearer: simulated
+  allocator: default
+
+network:
+  network_id: coalition-alpha   # same network → same derived multicast group as node A
+  repeat: 3
+  psk: shared-coalition-secret  # must match node A to authenticate
+
+classification:
+  level: 2            # NATO CONFIDENTIAL
+  releasable_to: REL BEL NLD
+
+connections:
+  policy_authority: node-a   # trust node-a for coalition-wide policy
+  authority_public_key: deebe67c48d3c61f3dbe40074e752b4457cf79c2286079a9c0a78649416f6d4d
+
+web:
+  port: 8001
+  peer_timeout_s: 15

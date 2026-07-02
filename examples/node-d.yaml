@@ -1,0 +1,31 @@
+# Coalition node D — nation DELTA. Run:  jdssarrow run --config examples/node-d.yaml
+identity:
+  node_id: node-d
+  callsign: DELTA-4
+  unit: 4PL/D/4-504
+  nation: FRA
+  role: forward_observer
+
+plugins:
+  codec: xml
+  transport: udp
+  security: psk
+  bearer: simulated
+  allocator: default
+
+network:
+  network_id: coalition-alpha
+  repeat: 3
+  psk: shared-coalition-secret
+
+classification:
+  level: 1
+  releasable_to: REL BEL NLD FRA
+
+connections:
+  policy_authority: node-a
+  authority_public_key: deebe67c48d3c61f3dbe40074e752b4457cf79c2286079a9c0a78649416f6d4d
+
+web:
+  port: 8003
+  peer_timeout_s: 15

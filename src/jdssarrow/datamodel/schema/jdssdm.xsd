@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  JDSSDM (AEP-76 Vol II) reference schema.
+
+  A JDSS message is a header block plus a typed body block. The header is fully
+  constrained; the body is validated leniently (xs:any) because its shape varies per
+  message type and each body is additionally validated by pydantic. This mirrors the
+  MIP object-item reporting envelope: an originator, a reporting time and a payload.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+
+  <xs:element name="JdssMessage">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="header" type="HeaderType"/>
+        <xs:element name="body" type="BodyType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="HeaderType">
+    <xs:sequence>
+      <xs:element name="message_id" type="xs:string"/>
+      <xs:element name="originator_id" type="xs:string"/>
+      <xs:element name="network_id" type="xs:string"/>
+      <xs:element name="reporting_time" type="xs:string"/>
+      <xs:element name="sequence" type="xs:integer"/>
+      <xs:element name="classification" type="xs:integer"/>
+      <xs:element name="releasable_to" type="xs:string"/>
+      <!-- forward-compatible: tolerate additional header fields added later -->
+      <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="BodyType">
+    <xs:sequence>
+      <xs:element name="type" type="xs:string"/>
+      <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>
