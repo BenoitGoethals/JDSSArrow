@@ -65,6 +65,13 @@ def list_servers(request: Request) -> dict:
     return {"servers": request.app.state.server_manager.status()}
 
 
+@router.get("/api/servers/log")
+def server_traffic(request: Request, server: str | None = None, limit: int = 200) -> dict:
+    """Recent CoT frames to/from the TAK servers (out = JDSS→CoT, in = CoT→JDSS)."""
+    mgr = request.app.state.server_manager
+    return {"counts": mgr.traffic.counts(), "entries": mgr.traffic.recent(limit, peer=server)}
+
+
 @router.post("/api/servers", status_code=201)
 async def create_server(body: ServerInput, request: Request) -> dict:
     servers = _current(request)

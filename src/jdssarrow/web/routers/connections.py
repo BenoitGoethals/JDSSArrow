@@ -45,6 +45,22 @@ def get_coalition(gateway: JdssGateway = Depends(get_gateway)) -> dict:
     return gateway.coalition_snapshot()
 
 
+# NB: this literal route must be registered *before* /api/coalition/{peer_id}, or "pair" would be
+# captured as a peer_id by the path-parameter route.
+@router.post("/api/coalition/pair")
+async def set_coalition_pair(
+    observer: str, originator: str, action: str, gateway: JdssGateway = Depends(get_gateway)
+) -> dict:
+    """Authority-only: block/allow one (observer, originator) cell of the communication matrix,
+    distributed to every node. ``action`` ∈ {block, allow, reset}."""
+    try:
+        return await gateway.coalition_set_pair(observer, originator, action)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/coalition/{peer_id}")
 async def set_coalition(
     peer_id: str, action: str, gateway: JdssGateway = Depends(get_gateway)

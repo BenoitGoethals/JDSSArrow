@@ -78,6 +78,7 @@ export interface CoalitionPolicy {
   version: number;
   enabled: boolean;
   signed: boolean;
+  pairs?: Record<string, string[]>; // observer -> blocked originators (the communication matrix)
 }
 
 export interface ConnMatrix {
@@ -119,6 +120,13 @@ export interface MsgLogEntry {
   type: string | null;
   originator_id: string | null;
   message_id: string | null;
+  callsign: string | null;
+  classification: number | null;
+  releasable_to: string | null;
+  network_id: string | null;
+  sequence: number | null;
+  reporting_time: string | null;
+  body: Record<string, unknown> | null;
 }
 
 export interface AppLogRecord {
@@ -183,6 +191,23 @@ export interface ServerConnection extends ServerInput {
   last_error: string | null;
 }
 
+// One CoT frame crossing a TAK-server / EUD bridge.
+export interface CotLogEntry {
+  ts: number;
+  peer: string;
+  direction: "in" | "out";
+  type: string | null;
+  uid: string | null;
+  callsign: string | null;
+  remarks: string | null;
+  size: number;
+  raw: string;
+}
+export interface CotLog {
+  counts: Record<string, number>;
+  entries: CotLogEntry[];
+}
+
 // Built-in ATAK/EUD TAK server status + config.
 export interface EudStatus {
   enabled: boolean;
@@ -219,6 +244,13 @@ export const api = {
   coalition: () => json<CoalitionPolicy>("/api/coalition"),
   setCoalition: (peer: string, action: "allow" | "block" | "reset") =>
     fetch(`/api/coalition/${peer}?action=${action}`, { method: "POST" }),
+  setCoalitionPair: (observer: string, originator: string, action: "block" | "allow" | "reset") =>
+    fetch(
+      `/api/coalition/pair?observer=${encodeURIComponent(observer)}&originator=${encodeURIComponent(
+        originator
+      )}&action=${action}`,
+      { method: "POST" }
+    ),
   simStatus: () => json<SimStatus>("/api/sim"),
   simStart: (body: { interval?: number; rogue?: string | null; isolated?: boolean }) =>
     fetch("/api/sim/start", {
@@ -271,6 +303,10 @@ export const api = {
     jsonBody<{ servers: ServerConnection[] }>(`/api/servers/${id}`, "PUT", body),
   deleteServer: (id: string) => jsonBody<{ servers: ServerConnection[] }>(`/api/servers/${id}`, "DELETE"),
   testServer: (body: ServerInput) => jsonBody<{ ok: boolean; detail: string }>("/api/servers/test", "POST", body),
+  serverTraffic: (server?: string, limit = 200) =>
+    json<CotLog>(
+      `/api/servers/log?limit=${limit}${server ? `&server=${encodeURIComponent(server)}` : ""}`
+    ),
   importPkcs12: (p12_base64: string, password: string) =>
     jsonBody<{ client_cert: string; client_key: string; cacert: string | null; common_name: string }>(
       "/api/servers/pkcs12",
@@ -282,6 +318,10 @@ export const api = {
   eud: () => json<EudStatus>("/api/eud"),
   setEud: (body: { enabled: boolean; host?: string; port: number; advertised_host?: string | null }) =>
     jsonBody<EudStatus>("/api/eud", "PUT", body),
+  eudTraffic: (limit = 200) => json<CotLog>(`/api/eud/log?limit=${limit}`),
+
+  // delete all buffered/logged messages (audit log, telemetry cache, dedup, CoT logs)
+  purge: () => jsonBody<{ cleared: Record<string, number>; total: number }>("/api/purge", "POST"),
 };
 
 async function jsonBody<T>(url: string, method: string, body?: unknown): Promise<T> {

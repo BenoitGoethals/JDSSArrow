@@ -128,6 +128,52 @@ async def test_jdss_to_cot_relay_reaches_server():
             await node.stop()
 
 
+async def test_server_inbound_cot_becomes_distinct_peer_with_callsign():
+    """A track a TAK server pushes to us shows up as its own coalition peer (not our node)."""
+    from jdssarrow.config.models import (
+        GatewayConfig,
+        GossipConfig,
+        NetworkConfig,
+        NodeIdentity,
+        PluginSelection,
+    )
+    from jdssarrow.gateway.gateway import JdssGateway
+    from jdssarrow.gateway.node import SoldierNode
+
+    async def handle(reader, writer):
+        writer.write(
+            b'<event version="2.0" uid="TAK-9" type="a-f-G-U-C"><point lat="1" lon="2"/>'
+            b'<detail><contact callsign="OSCAR-9"/></detail></event>'
+        )
+        await writer.drain()
+        while await reader.read(65536):
+            pass
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    cfg = GatewayConfig(
+        identity=NodeIdentity(node_id="web", callsign="WEB"),
+        plugins=PluginSelection(transport="loopback", codec="xml", security="psk"),
+        network=NetworkConfig(network_id="srv-net", repeat=1, psk="k"),
+        gossip=GossipConfig(enabled=False),
+    )
+    node = SoldierNode(JdssGateway(cfg))
+    mgr = ServerConnectionManager()
+    async with srv:
+        await node.start()
+        mgr.attach(node, node.gateway)
+        await mgr.reconcile([_def("ots", port)])
+        await asyncio.sleep(0.4)
+        try:
+            peers = {p["node_id"]: p for p in node.gateway.metrics.peers()}
+            assert any(nid.startswith("tak-ots-") for nid in peers)
+            assert any(p["callsign"] == "OSCAR-9" for p in peers.values())
+            assert "web" not in peers  # not collapsed onto our own identity
+        finally:
+            await mgr.stop()
+            await node.stop()
+
+
 async def test_test_probe_reports_ok_and_failure():
     mock, srv, port = await _server()
     mgr = ServerConnectionManager()
@@ -137,6 +183,37 @@ async def test_test_probe_reports_ok_and_failure():
     # server is closed now → probe fails
     bad = await mgr.test(_def("ots", port), timeout=1)
     assert bad["ok"] is False
+
+
+def test_cot_traffic_log_parses_and_records():
+    from jdssarrow.web.cotlog import CotTrafficLog
+
+    log = CotTrafficLog()
+    log.record(
+        peer="ots",
+        direction="out",
+        raw=b'<event uid="U1" type="a-f-G-U-C"><point lat="1" lon="2"/>'
+        b'<detail><contact callsign="FOX"/></detail></event>',
+    )
+    log.record(peer="ots", direction="in", raw=b"not xml at all")
+    assert log.counts() == {"in": 1, "out": 1}
+    entries = log.recent()
+    assert entries[0]["type"] == "a-f-G-U-C" and entries[0]["uid"] == "U1"
+    assert entries[0]["callsign"] == "FOX" and entries[0]["direction"] == "out"
+    assert entries[1]["type"] is None  # unparseable frames are still recorded (with raw)
+    assert log.recent(peer="other") == []  # per-peer filter
+
+
+def test_server_and_eud_traffic_endpoints():
+    from fastapi.testclient import TestClient
+
+    from jdssarrow.web.app import create_app
+
+    with TestClient(create_app()) as c:
+        s = c.get("/api/servers/log")
+        assert s.status_code == 200 and "entries" in s.json() and "counts" in s.json()
+        e = c.get("/api/eud/log")
+        assert e.status_code == 200 and "entries" in e.json()
 
 
 @pytest.mark.parametrize("bad_port", [0, 70000])

@@ -29,6 +29,13 @@ def get_eud(request: Request) -> dict:
     return request.app.state.eud_server.status()
 
 
+@router.get("/api/eud/log")
+def eud_traffic(request: Request, limit: int = 200) -> dict:
+    """Recent CoT frames to/from connected ATAK EUDs (out = JDSS→CoT, in = CoT→JDSS)."""
+    mgr = request.app.state.eud_server
+    return {"counts": mgr.traffic.counts(), "entries": mgr.traffic.recent(limit)}
+
+
 @router.put("/api/eud")
 async def update_eud(body: EudServerInput, request: Request) -> dict:
     """Apply the EUD server settings live and persist them."""

@@ -30,6 +30,13 @@ class LogEntry:
     type: str | None = None
     originator_id: str | None = None
     message_id: str | None = None
+    callsign: str | None = None
+    classification: int | None = None
+    releasable_to: str | None = None
+    network_id: str | None = None
+    sequence: int | None = None
+    reporting_time: str | None = None
+    body: dict[str, Any] | None = None  # the decoded JDSSDM body, for the detail view
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +47,13 @@ class LogEntry:
             "type": self.type,
             "originator_id": self.originator_id,
             "message_id": self.message_id,
+            "callsign": self.callsign,
+            "classification": self.classification,
+            "releasable_to": self.releasable_to,
+            "network_id": self.network_id,
+            "sequence": self.sequence,
+            "reporting_time": self.reporting_time,
+            "body": self.body,
         }
 
 
@@ -58,6 +72,13 @@ class MessageLog:
         type: str | None = None,
         originator_id: str | None = None,
         message_id: str | None = None,
+        callsign: str | None = None,
+        classification: int | None = None,
+        releasable_to: str | None = None,
+        network_id: str | None = None,
+        sequence: int | None = None,
+        reporting_time: str | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         self._buf.append(
             LogEntry(
@@ -68,6 +89,13 @@ class MessageLog:
                 type=type,
                 originator_id=originator_id,
                 message_id=message_id,
+                callsign=callsign,
+                classification=classification,
+                releasable_to=releasable_to,
+                network_id=network_id,
+                sequence=sequence,
+                reporting_time=reporting_time,
+                body=body,
             )
         )
 
@@ -90,6 +118,12 @@ class MessageLog:
             c[e.direction] = c.get(e.direction, 0) + 1
             c[e.disposition] = c.get(e.disposition, 0) + 1
         return c
+
+    def clear(self) -> int:
+        """Drop all recorded messages; returns how many were cleared."""
+        n = len(self._buf)
+        self._buf.clear()
+        return n
 
 
 # --------------------------------------------------------------- application log

@@ -67,6 +67,7 @@ def cot_to_message(raw: bytes, originator: str) -> JdssMessage | None:
     lat, lon = _point(root)
     detail = root.find("detail")
     callsign, remarks = "", ""
+    course = speed = None
     if detail is not None:
         contact = detail.find("contact")
         if contact is not None:
@@ -74,6 +75,10 @@ def cot_to_message(raw: bytes, originator: str) -> JdssMessage | None:
         rem = detail.find("remarks")
         if rem is not None and rem.text:
             remarks = rem.text
+        track = detail.find("track")  # ATAK's course (deg true) + speed (m/s)
+        if track is not None:
+            course = _deg(track.get("course"))
+            speed = _spd(track.get("speed"))
 
     header = MessageHeader(originator_id=originator)
 
@@ -105,7 +110,12 @@ def cot_to_message(raw: bytes, originator: str) -> JdssMessage | None:
         if aff == "f":
             return JdssMessage(
                 header=header,
-                body=Presence(location=Location(lat=lat, lon=lon), callsign=callsign or "ATAK"),
+                body=Presence(
+                    location=Location(lat=lat, lon=lon),
+                    callsign=callsign or "ATAK",
+                    course_deg=course,
+                    speed_mps=speed,
+                ),
             )
         return JdssMessage(
             header=header,
@@ -113,9 +123,32 @@ def cot_to_message(raw: bytes, originator: str) -> JdssMessage | None:
                 location=Location(lat=lat, lon=lon),
                 description=remarks or callsign or "CoT track",
                 identity=_AFF_TO_IDENTITY.get(aff, StandardIdentity.UNKNOWN),
+                course_deg=course,
+                speed_mps=speed,
             ),
         )
     return None
+
+
+def _num(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except ValueError:
+        return None
+    return None if (n != n or n in (float("inf"), float("-inf"))) else n  # reject NaN/inf
+
+
+def _deg(value: str | None) -> float | None:
+    """Course over ground, or None for ATAK's unknown sentinels (9999999, NaN)."""
+    n = _num(value)
+    return n if n is not None and 0 <= n <= 360 else None
+
+
+def _spd(value: str | None) -> float | None:
+    n = _num(value)
+    return n if n is not None and 0 <= n < 1_000_000 else None
 
 
 def message_to_cot(message: JdssMessage, stale_s: int = 300) -> bytes | None:
@@ -191,6 +224,16 @@ def message_to_cot(message: JdssMessage, stale_s: int = 300) -> bytes | None:
         ET.SubElement(detail, "contact", {"callsign": callsign})
     if remarks:
         ET.SubElement(detail, "remarks").text = remarks
+    # movement — ATAK renders a leader/velocity vector from course (deg true) + speed (m/s)
+    course = getattr(body, "course_deg", None)
+    speed = getattr(body, "speed_mps", None)
+    if course is not None or speed is not None:
+        ET.SubElement(
+            detail,
+            "track",
+            {"course": str(course if course is not None else 0.0),
+             "speed": str(speed if speed is not None else 0.0)},
+        )
     return ET.tostring(ev, encoding="utf-8")
 
 

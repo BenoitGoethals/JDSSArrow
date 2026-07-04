@@ -29,6 +29,14 @@ from jdssarrow.monitor.telemetry_arrow import ArrowTelemetryBuffer
 _COARSE_DROP = {"framing": "decode", "security": "decode", "codec": "decode"}
 
 
+def _iso(value: object) -> str | None:
+    """A datetime rendered as ISO-8601, or None."""
+    if value is None:
+        return None
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else str(value)
+
+
 class GatewayMetrics:
     name = "gateway"
 
@@ -67,26 +75,14 @@ class GatewayMetrics:
     def record_sent(self, message: JdssMessage) -> None:
         self._sent.labels(type=message.type).inc()
         self.telemetry.add(message)
-        self.audit.record(
-            "out",
-            "accepted",
-            type=message.type,
-            originator_id=message.header.originator_id,
-            message_id=message.header.message_id,
-        )
+        self.audit.record("out", "accepted", **self._audit_fields(message))
         self._emit("sent", message)
 
     def record_received(self, message: JdssMessage) -> None:
         self._received.labels(type=message.type).inc()
         self.telemetry.add(message)
         self._enrich_peer(message)
-        self.audit.record(
-            "in",
-            "accepted",
-            type=message.type,
-            originator_id=message.header.originator_id,
-            message_id=message.header.message_id,
-        )
+        self.audit.record("in", "accepted", **self._audit_fields(message))
         self._emit("received", message)
 
     def record_dropped(self, reason: str, message: JdssMessage | None = None) -> None:
@@ -95,15 +91,30 @@ class GatewayMetrics:
         label = _COARSE_DROP.get(first, first)
         self._dropped.labels(reason=label).inc()
         self._drops[label] = self._drops.get(label, 0) + 1
-        # audit log keeps the *detailed* reason and the message identity when known
-        self.audit.record(
-            "in",
-            "rejected",
-            reason=reason,
-            type=message.type if message is not None else None,
-            originator_id=message.header.originator_id if message is not None else None,
-            message_id=message.header.message_id if message is not None else None,
-        )
+        # audit log keeps the *detailed* reason and (when the frame decoded) the message context
+        fields = self._audit_fields(message) if message is not None else {}
+        self.audit.record("in", "rejected", reason=reason, **fields)
+
+    def _audit_fields(self, message: JdssMessage) -> dict[str, Any]:
+        """Everything the message-log detail view shows for one entry."""
+        h = message.header
+        try:
+            body = message.body.model_dump(mode="json")
+        except Exception:
+            body = None
+        return {
+            "type": message.type,
+            "originator_id": h.originator_id,
+            "message_id": h.message_id,
+            "callsign": getattr(message.body, "callsign", None)
+            or self._nodes.get(h.originator_id, {}).get("callsign"),
+            "classification": int(h.classification),
+            "releasable_to": h.releasable_to,
+            "network_id": getattr(h, "network_id", None),
+            "sequence": getattr(h, "sequence", None),
+            "reporting_time": _iso(getattr(h, "reporting_time", None)),
+            "body": body,
+        }
 
     def drops(self) -> dict[str, int]:
         """Readable drop counts by reason. ``decode`` = failed auth/framing/schema;

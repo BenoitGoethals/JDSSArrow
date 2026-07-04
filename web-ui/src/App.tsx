@@ -1,4 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import ms from "milsymbol";
 import {
   api,
   CLASS_LABELS,
@@ -8,6 +9,8 @@ import {
   CoalitionPolicy,
   AppLogRecord,
   ConnectInfo,
+  CotLog,
+  CotLogEntry,
   EudStatus,
   ConnMatrix,
   Connections,
@@ -43,6 +46,41 @@ const TYPE_COLOR: Record<string, string> = {
   Overlay: "#a0a04a",
 };
 const typeColor = (t?: string) => (t && TYPE_COLOR[t]) || "#7c8a99";
+
+// Render an APP-6(D) / MIL-STD-2525D symbol from a 20-digit SIDC (carried on JDSSDM bodies).
+function MilSymbol({ sidc, size = 30 }: { sidc?: string | null; size?: number }) {
+  if (!sidc || sidc.length < 10) return null;
+  let svg = "";
+  try {
+    svg = new ms.Symbol(sidc, { size }).asSVG();
+  } catch {
+    return null;
+  }
+  return <span className="milsym" title={sidc} dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+// client-side conformance check against the reference 2525D engine
+function sidcValid(sidc?: string | null): boolean {
+  if (!sidc) return false;
+  try {
+    return new ms.Symbol(sidc).isValid() === true;
+  } catch {
+    return false;
+  }
+}
+
+// pull the SIDC out of a message body (or its first overlay graphic)
+function bodySidc(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as Record<string, unknown>;
+  if (typeof b.sidc === "string") return b.sidc;
+  const graphics = b.graphics;
+  if (Array.isArray(graphics) && graphics[0] && typeof graphics[0] === "object") {
+    const g = graphics[0] as Record<string, unknown>;
+    if (typeof g.sidc === "string") return g.sidc;
+  }
+  return undefined;
+}
 
 function ClassBadge({ level }: { level: number }) {
   return (
@@ -200,6 +238,7 @@ export function App() {
           <CapabilitiesPanel />
           <EudServerPanel />
           <ServerConnectionsPanel />
+          <MaintenancePanel onPurged={() => { refreshLive(); setEvents([]); }} />
         </div>
       )}
 
@@ -785,12 +824,140 @@ Message types on this network: ${info.message_types.join(", ")}`;
   );
 }
 
+function CotTrafficModal({
+  title,
+  fetcher,
+  onClose,
+}: {
+  title: string;
+  fetcher: () => Promise<CotLog>;
+  onClose: () => void;
+}) {
+  const [log, setLog] = useState<CotLog | null>(null);
+  const [sel, setSel] = useState<CotLogEntry | null>(null);
+  useEffect(() => {
+    const load = () => fetcher().then(setLog).catch(() => {});
+    load();
+    const t = setInterval(load, 1500);
+    return () => clearInterval(t);
+  }, [fetcher]);
+  const hhmmss = (ts: number) => new Date(ts * 1000).toISOString().slice(11, 19);
+  return (
+    <Modal title={title} onClose={onClose}>
+      <p className="hint">
+        Live CoT crossing the bridge — <b>▲ out</b> = JDSS→CoT sent to the server,{" "}
+        <b>▼ in</b> = CoT→JDSS received. {log ? `${log.counts.out ?? 0} out · ${log.counts.in ?? 0} in` : ""}.
+        Click a row for the raw CoT.
+      </p>
+      <div className="cotlog">
+        <div className="cotlog-head">
+          <span></span>
+          <span>Type</span>
+          <span>uid / callsign</span>
+          <span>peer</span>
+          <span>time</span>
+        </div>
+        <ul>
+          {(log?.entries ?? []).slice().reverse().map((e, i) => (
+            <li key={i} className={`${e.direction} clickable`} onClick={() => setSel(e)}>
+              <span className="dir">{e.direction === "out" ? "▲" : "▼"}</span>
+              <span className="type" style={{ color: typeColor(cotToJdss(e.type)) }}>
+                {e.type ?? "—"}
+              </span>
+              <span className="from">
+                {e.callsign ? `${e.callsign} ` : ""}
+                {e.uid ?? ""}
+              </span>
+              <span className="hint">{e.peer}</span>
+              <span className="time">{hhmmss(e.ts)}</span>
+            </li>
+          ))}
+          {log && log.entries.length === 0 && <li className="hint">no CoT yet</li>}
+        </ul>
+      </div>
+      {sel && (
+        <>
+          <h3>
+            Raw CoT · {sel.type} ({sel.size} bytes)
+          </h3>
+          <div className="code">
+            <button
+              className="copy"
+              onClick={() => navigator.clipboard?.writeText(sel.raw)}
+            >
+              copy
+            </button>
+            <pre>{prettyXml(sel.raw)}</pre>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+// map a CoT type back to the JDSS type name so the colour matches the rest of the UI
+function cotToJdss(t: string | null): string {
+  if (!t) return "";
+  if (t.startsWith("a-f")) return "Presence";
+  if (t.startsWith("a-")) return "ContactSighting";
+  if (t.startsWith("b-t-f")) return "Chat";
+  if (t.startsWith("b-r-f-h-c")) return "CasevacRequest";
+  if (t.startsWith("u-d") || t.startsWith("b-m-p")) return "Overlay";
+  return "";
+}
+
+// light-touch pretty printer: newline before each nested tag so raw CoT is readable
+function prettyXml(xml: string): string {
+  return xml.replace(/></g, ">\n<");
+}
+
+function MaintenancePanel({ onPurged }: { onPurged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const purge = async () => {
+    if (!confirm("Delete ALL messages — audit log, telemetry cache, dedup cache and CoT traffic logs? This cannot be undone.")) {
+      return;
+    }
+    setBusy(true);
+    setMsg("purging…");
+    try {
+      const r = await api.purge();
+      const parts = Object.entries(r.cleared)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${n} ${k.replace(/_/g, " ")}`);
+      setMsg(`✓ cleared ${r.total} message${r.total === 1 ? "" : "s"}${parts.length ? ` (${parts.join(", ")})` : ""}`);
+      onPurged();
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h2>Maintenance</h2>
+      <p className="hint">
+        Delete all buffered/logged messages on this node: the message audit log, the telemetry
+        cache, the receive dedup cache, and the CoT server/EUD traffic logs. Peers, the application
+        log and Prometheus counters are kept.
+      </p>
+      <button className="danger" onClick={purge} disabled={busy}>
+        Clear all messages
+      </button>
+      <span className="status">{msg}</span>
+    </section>
+  );
+}
+
 function EudServerPanel() {
   const [st, setSt] = useState<EudStatus | null>(null);
   const [port, setPort] = useState(8087);
   const [advertised, setAdvertised] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [showTraffic, setShowTraffic] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -887,8 +1054,18 @@ function EudServerPanel() {
             Start server
           </button>
         )}
+        <button className="ghost" onClick={() => setShowTraffic(true)}>
+          CoT traffic
+        </button>
         <span className="status">{msg}</span>
       </div>
+      {showTraffic && (
+        <CotTrafficModal
+          title="ATAK / EUD CoT traffic"
+          fetcher={() => api.eudTraffic()}
+          onClose={() => setShowTraffic(false)}
+        />
+      )}
 
       <div className="eud-advertise">
         <label>
@@ -976,6 +1153,7 @@ function ServerConnectionsPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [traffic, setTraffic] = useState<string | null>(null); // server id, or "*" for all
   const [p12File, setP12File] = useState<File | null>(null);
   const [p12Pass, setP12Pass] = useState("");
   const [p12Msg, setP12Msg] = useState("");
@@ -1116,6 +1294,9 @@ function ServerConnectionsPanel() {
         live and saved to the config file. <b>OpenTAKServer</b>: 8088 (plaintext) or 8089 (TLS,
         client cert whose CN is a registered OTS user).
       </p>
+      <button className="ghost" onClick={() => setTraffic("*")}>
+        Show CoT traffic (all servers)
+      </button>
 
       {servers.length === 0 ? (
         <p className="hint">No server connections yet — add one below.</p>
@@ -1166,6 +1347,7 @@ function ServerConnectionsPanel() {
                   {s.queued > 0 ? ` · ${s.queued} q` : ""}
                 </td>
                 <td className="srv-actions">
+                  <button onClick={() => setTraffic(s.id)}>Traffic</button>
                   <button onClick={() => edit(s)}>Edit</button>
                   <button onClick={() => toggle(s)} disabled={busy}>
                     {s.enabled ? "Disable" : "Enable"}
@@ -1267,6 +1449,13 @@ function ServerConnectionsPanel() {
           <span className="status">{status}</span>
         </div>
       </div>
+      {traffic && (
+        <CotTrafficModal
+          title={traffic === "*" ? "TAK server CoT traffic" : `CoT traffic · ${traffic}`}
+          fetcher={() => api.serverTraffic(traffic === "*" ? undefined : traffic)}
+          onClose={() => setTraffic(null)}
+        />
+      )}
     </section>
   );
 }
@@ -1307,6 +1496,7 @@ function LogsPanel() {
   const [appLog, setAppLog] = useState<AppLogRecord[]>([]);
   const [dir, setDir] = useState("");
   const [disp, setDisp] = useState("");
+  const [selected, setSelected] = useState<MsgLogEntry | null>(null);
 
   useEffect(() => {
     const load = () => {
@@ -1377,12 +1567,19 @@ function LogsPanel() {
         </div>
         <ul>
           {msgs.map((e, i) => (
-            <li key={i} className={e.disposition}>
+            <li
+              key={i}
+              className={`${e.disposition} clickable`}
+              title="click for full message detail"
+              onClick={() => setSelected(e)}
+            >
               <span className="dir">{e.direction === "out" ? "▲ TX" : "▼ RX"}</span>
               <span className="type" style={{ color: typeColor(e.type ?? "") }}>
                 {e.type ?? "—"}
               </span>
-              <span className="from">{e.originator_id ?? "—"}</span>
+              <span className="from">
+                {e.callsign ? `${e.callsign} (${e.originator_id})` : e.originator_id ?? "—"}
+              </span>
               <span className="disp">
                 {e.disposition === "accepted" ? (
                   <span className="ok">accepted</span>
@@ -1395,7 +1592,76 @@ function LogsPanel() {
           ))}
         </ul>
       </section>
+      {selected && <MsgLogModal entry={selected} onClose={() => setSelected(null)} />}
     </>
+  );
+}
+
+function MsgLogModal({ entry, onClose }: { entry: MsgLogEntry; onClose: () => void }) {
+  const rows: [string, ReactNode][] = [
+    [
+      "Type",
+      <span style={{ color: typeColor(entry.type ?? "") }}>{entry.type ?? "—"}</span>,
+    ],
+    ...(bodySidc(entry.body)
+      ? ([[
+          "Symbol (APP-6D)",
+          <span className="sidc-cell">
+            <MilSymbol sidc={bodySidc(entry.body)} /> <code>{bodySidc(entry.body)}</code>{" "}
+            {sidcValid(bodySidc(entry.body)) ? (
+              <span className="ok">✓ 2525D</span>
+            ) : (
+              <span className="rej">✗ invalid</span>
+            )}
+          </span>,
+        ]] as [string, ReactNode][])
+      : []),
+    ["Direction", entry.direction === "out" ? "▲ transmitted" : "▼ received"],
+    [
+      "Disposition",
+      entry.disposition === "accepted" ? (
+        <span className="ok">accepted</span>
+      ) : (
+        <span className="rej">✗ rejected — {entry.reason}</span>
+      ),
+    ],
+    [
+      "From",
+      entry.callsign ? `${entry.callsign} (${entry.originator_id})` : entry.originator_id ?? "—",
+    ],
+    ["Network", entry.network_id ?? "—"],
+    ["Message id", <code>{entry.message_id ?? "—"}</code>],
+    ["Sequence", entry.sequence != null ? String(entry.sequence) : "—"],
+    ["Reporting time", entry.reporting_time ?? "—"],
+    [
+      "Classification",
+      entry.classification != null ? (
+        <span>
+          <ClassBadge level={entry.classification} /> {CLASS_LABELS[entry.classification]} ·{" "}
+          {entry.releasable_to ?? "—"}
+        </span>
+      ) : (
+        "—"
+      ),
+    ],
+    ["Timestamp", new Date(entry.ts * 1000).toISOString().replace("T", " ").slice(0, 19)],
+  ];
+  return (
+    <Modal
+      title={
+        <>
+          <span style={{ color: typeColor(entry.type ?? "") }}>{entry.type ?? "message"}</span>{" "}
+          {entry.direction === "out" ? "▲ TX" : "▼ RX"} · {entry.disposition}
+        </>
+      }
+      onClose={onClose}
+    >
+      <h3>Envelope</h3>
+      <KvTable rows={rows} />
+      <h3>Body (JDSSDM)</h3>
+      {entry.body ? <StructuredValue value={entry.body} /> : <span className="jnil">— no decoded body —</span>}
+      <CopyJson value={entry} />
+    </Modal>
   );
 }
 
@@ -1680,8 +1946,11 @@ function MatrixPanel() {
     if (!pol || obs !== pol.node_id) return false;
     return (pol.overrides[from] ?? pol.default_action) === "block";
   };
+  // a specific (observer ← originator) cell blocked by the coalition communication matrix
+  const pairBlocks = (obs: string, from: string): boolean =>
+    matrix?.coalition?.pairs?.[obs]?.includes(from) ?? false;
   const isBlocked = (obs: string, from: string): boolean =>
-    coalitionBlocks(from) || localBlocks(obs, from);
+    coalitionBlocks(from) || localBlocks(obs, from) || pairBlocks(obs, from);
   const cellStyle = (obs: string, from: string, v: number): CSSProperties => {
     if (obs === from) return { color: "var(--muted)" };
     if (isBlocked(obs, from)) return { color: "#c0392b", fontWeight: 700 };
@@ -1750,13 +2019,23 @@ function MatrixPanel() {
         </table>
       )}
       <p className="hint">
-        Cell = messages the row node accepted from the column node. <b>Live</b> assembles the
-        matrix from peer-digest gossip across the real coalition network (each node broadcasts
-        its own row). <b>Probe</b> runs a short in-process exercise with a rogue, whose column
-        stays all-zero because nobody accepts it.
+        Cell = messages the row node accepted from the column node. Click a cell to inspect it and
+        {matrix?.coalition?.am_authority ? " choose whether that pair may communicate" : " see its status"}.
+        {matrix?.coalition?.am_authority ? (
+          <b> You are the policy authority — pair blocks distribute to the whole coalition.</b>
+        ) : matrix?.coalition?.enabled ? (
+          " Only the policy authority can edit the communication matrix."
+        ) : (
+          " Designate a policy authority to edit the matrix network-wide."
+        )}
       </p>
       {matrix && cell && (
-        <MatrixCellModal matrix={matrix} cell={cell} onClose={() => setCell(null)} />
+        <MatrixCellModal
+          matrix={matrix}
+          cell={cell}
+          onClose={() => setCell(null)}
+          onChanged={() => load(mode)}
+        />
       )}
     </section>
   );
@@ -1785,7 +2064,7 @@ function FeedPanel({ events }: { events: MessageEvent[] }) {
           >
             <span className="dir">{e.direction === "sent" ? "▲ TX" : "▼ RX"}</span>
             <span className="type" style={{ color: typeColor(e.type) }}>
-              {e.type}
+              <MilSymbol sidc={bodySidc(e.body)} size={18} /> {e.type}
             </span>
             <span className="from">
               {e.callsign ? `${e.callsign} (${e.originator_id})` : e.originator_id}
@@ -1906,8 +2185,18 @@ function MessageModal({ event, onClose }: { event: MessageEvent; onClose: () => 
     },
     body: event.body,
   };
+  const sidc = bodySidc(event.body);
   const headerRows: [string, ReactNode][] = [
     ["Type", <span style={{ color: typeColor(event.type) }}>{event.type}</span>],
+    ...(sidc
+      ? ([[
+          "Symbol (APP-6D)",
+          <span className="sidc-cell">
+            <MilSymbol sidc={sidc} /> <code>{sidc}</code>{" "}
+            {sidcValid(sidc) ? <span className="ok">✓ 2525D</span> : <span className="rej">✗ invalid</span>}
+          </span>,
+        ]] as [string, ReactNode][])
+      : []),
     ["Direction", event.direction === "sent" ? "▲ transmitted" : "▼ received"],
     ["Originator", event.callsign ? `${event.callsign} (${event.originator_id})` : event.originator_id],
     ["Message id", <code>{event.message_id}</code>],
@@ -1975,12 +2264,15 @@ function MatrixCellModal({
   matrix,
   cell,
   onClose,
+  onChanged,
 }: {
   matrix: ConnMatrix;
   cell: { obs: string; from: string };
   onClose: () => void;
+  onChanged: () => void;
 }) {
   const { obs, from } = cell;
+  const [busy, setBusy] = useState(false);
   const count = matrix.rows[obs]?.[from] ?? 0;
   const coalitionBlock =
     matrix.coalition && matrix.coalition.enabled
@@ -1990,10 +2282,14 @@ function MatrixCellModal({
     matrix.policy && obs === matrix.policy.node_id
       ? (matrix.policy.overrides[from] ?? matrix.policy.default_action) === "block"
       : false;
+  const pairBlock = matrix.coalition?.pairs?.[obs]?.includes(from) ?? false;
+  const amAuthority = matrix.coalition?.am_authority ?? false;
 
   let status: ReactNode;
   if (coalitionBlock)
-    status = <span style={{ color: "#c0392b" }}>✗ blocked network-wide (coalition policy)</span>;
+    status = <span style={{ color: "#c0392b" }}>✗ blocked network-wide (column: {from})</span>;
+  else if (pairBlock)
+    status = <span style={{ color: "#c0392b" }}>✗ this pair blocked ({obs} ✗ {from})</span>;
   else if (localBlock)
     status = <span style={{ color: "#c0392b" }}>✗ blocked locally by {obs}</span>;
   else if (count > 0) status = <span style={{ color: "var(--accent)" }}>accepting traffic</span>;
@@ -2005,12 +2301,43 @@ function MatrixCellModal({
     ["Messages accepted", String(count)],
     ["Status", status],
   ];
+
+  const setPair = async (action: "block" | "allow") => {
+    setBusy(true);
+    try {
+      await api.setCoalitionPair(obs, from, action);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Modal title={<>Connection · {obs} ← {from}</>} onClose={onClose}>
       <p className="hint">
-        How many messages the row node ({obs}) has accepted from the column node ({from}).
+        Whether the row node ({obs}) may accept traffic from the column node ({from}).
       </p>
       <KvTable rows={rows} />
+      {obs === from ? null : amAuthority ? (
+        <div className="modal-actions">
+          {pairBlock ? (
+            <button disabled={busy} onClick={() => setPair("allow")}>
+              Allow {obs} ← {from}
+            </button>
+          ) : (
+            <button className="danger" disabled={busy} onClick={() => setPair("block")}>
+              Block {obs} ← {from}
+            </button>
+          )}
+          <span className="hint">distributed to the whole coalition</span>
+        </div>
+      ) : (
+        <p className="hint">
+          {matrix.coalition?.enabled
+            ? "Only the policy authority can change who may communicate."
+            : "No policy authority configured — set one to edit the matrix network-wide."}
+        </p>
+      )}
     </Modal>
   );
 }

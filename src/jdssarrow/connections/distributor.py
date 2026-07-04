@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
-from jdssarrow.connections.policy import MatrixConnectionPolicy
+from jdssarrow.connections.policy import MatrixConnectionPolicy, PairBlockPolicy
 from jdssarrow.connections.signing import AuthoritySigner, AuthorityVerifier, canonical_payload
 from jdssarrow.iem.exchange import ExchangeEngine
 
@@ -36,10 +36,12 @@ class PolicyDistributor:
         interval_s: float = 2.0,
         signer: AuthoritySigner | None = None,
         verifier: AuthorityVerifier | None = None,
+        pair_policy: PairBlockPolicy | None = None,
     ) -> None:
         self._node_id = node_id
         self._engine = engine
         self._policy = coalition_policy  # shared with the gateway's composite policy
+        self._pairs = pair_policy if pair_policy is not None else PairBlockPolicy(node_id)
         self._authority_id = authority_id
         self._is_authority = authority_id is not None and node_id == authority_id
         self._interval = max(0.05, interval_s)
@@ -89,13 +91,17 @@ class PolicyDistributor:
 
     async def _broadcast(self) -> None:
         snap = self._policy.snapshot()
+        pairs = self._pairs.snapshot()
         data = {
             "version": self._version,
             "default_action": snap["default_action"],
             "overrides": snap["overrides"],
+            "pairs": pairs,
         }
         if self._signer is not None:
-            payload = canonical_payload(self._version, snap["default_action"], snap["overrides"])
+            payload = canonical_payload(
+                self._version, snap["default_action"], snap["overrides"], pairs
+            )
             data["sig"] = self._signer.sign(payload)
         await self._engine.publish_control(_KIND, data)
 
@@ -123,6 +129,16 @@ class PolicyDistributor:
         self._policy.set_default(action)
         await self._commit()
 
+    async def block_pair(self, observer: str, originator: str) -> None:
+        self._require_authority()
+        self._pairs.block(observer, originator)
+        await self._commit()
+
+    async def allow_pair(self, observer: str, originator: str) -> None:
+        self._require_authority()
+        self._pairs.allow(observer, originator)
+        await self._commit()
+
     async def _commit(self) -> None:
         self._version += 1
         await self._broadcast()
@@ -135,12 +151,14 @@ class PolicyDistributor:
         version = int(data.get("version", 0))
         default_action = data.get("default_action", "allow")
         overrides = data.get("overrides", {})
+        pairs = data.get("pairs", {})
         # per-authority signature verification: unforgeable even by a coalition-key holder
         if self._verifier is not None:
-            payload = canonical_payload(version, default_action, overrides)
+            payload = canonical_payload(version, default_action, overrides, pairs)
             if not self._verifier.verify(payload, data.get("sig", "")):
                 return  # forged / unsigned / tampered → reject
         if version <= self._version:
             return
         self._version = version
         self._policy.replace(default_action, overrides)
+        self._pairs.replace(pairs)

@@ -140,6 +140,75 @@ async def test_jdss_streams_to_connected_eud():
         await web.stop()
 
 
+async def test_ping_gets_pong():
+    """ATAK's keepalive ping (t-x-c-t) must get a pong, or ATAK reports 'data timed out'."""
+    node = SoldierNode(JdssGateway(_cfg("web", "WEB")))
+    await node.start()
+    mgr = EudServerManager()
+    mgr.attach(node, node.gateway)
+    port = _free_port()
+    await mgr.reconfigure(EudServerConfig(enabled=True, host="127.0.0.1", port=port))
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(b'<event version="2.0" uid="X-ping" type="t-x-c-t" how="m-g">'
+                     b'<point lat="0" lon="0"/></event>')
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(4096), 2)
+        assert b"t-x-c-t-r" in data  # a pong
+    finally:
+        writer.close()
+        await mgr.stop()
+        await node.stop()
+
+
+async def test_atak_appears_in_local_peers_with_callsign():
+    """The EUD shows up in *this* node's own peers/matrix picture with its callsign."""
+    node = SoldierNode(JdssGateway(_cfg("web", "WEB")))
+    await node.start()
+    mgr = EudServerManager()
+    mgr.attach(node, node.gateway)
+    port = _free_port()
+    await mgr.reconfigure(EudServerConfig(enabled=True, host="127.0.0.1", port=port))
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(ATAK_SA)
+        await writer.drain()
+        await asyncio.sleep(0.3)
+        peers = {p["node_id"]: p for p in node.gateway.metrics.peers()}
+        assert "atak-ATAK-123" in peers
+        assert peers["atak-ATAK-123"]["callsign"] == "FOX-1"
+        assert peers["atak-ATAK-123"]["role"] == "atak"  # from the synthesized Identification
+        assert "web" not in peers  # the EUD is not folded onto our own node's identity
+    finally:
+        writer.close()
+        await mgr.stop()
+        await node.stop()
+
+
+async def test_eud_own_track_not_echoed_back():
+    """The server must not send an EUD its own track back (or ATAK shows a ghost of itself)."""
+    node = SoldierNode(JdssGateway(_cfg("web", "WEB")))
+    await node.start()
+    mgr = EudServerManager()
+    mgr.attach(node, node.gateway)
+    port = _free_port()
+    await mgr.reconfigure(EudServerConfig(enabled=True, host="127.0.0.1", port=port))
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(ATAK_SA)
+        await writer.drain()
+        got = b""
+        try:
+            got = await asyncio.wait_for(reader.read(4096), 0.4)
+        except TimeoutError:
+            pass
+        assert b"atak-ATAK-123" not in got  # not echoed back to its source
+    finally:
+        writer.close()
+        await mgr.stop()
+        await node.stop()
+
+
 async def test_eud_router_get_and_put():
     from fastapi.testclient import TestClient
 

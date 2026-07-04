@@ -32,6 +32,7 @@ from jdssarrow.config.models import ServerConnection
 from jdssarrow.datamodel.messages import Identification, JdssMessage, MessageHeader
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.gateway.node import SoldierNode
+from jdssarrow.web.cotlog import CotTrafficLog
 
 # fields that require tearing the connector down and rebuilding it when they change
 _CONNECT_FIELDS = ("host", "port", "tls", "verify", "client_cert", "client_key", "cacert")
@@ -48,6 +49,7 @@ class ServerConnectionManager:
         self._tmp: dict[str, list[str]] = {}  # per-server temp PEM files to clean up
         self._origins: dict[str, set[str]] = {}  # server id -> originators it has sourced
         self._identified: set[str] = set()  # originators we've announced an Identification for
+        self.traffic = CotTrafficLog()  # inspectable log of CoT to/from the servers
 
     # ------------------------------------------------------------------ wiring
     def attach(self, node: SoldierNode, gateway: JdssGateway) -> None:
@@ -114,6 +116,7 @@ class ServerConnectionManager:
         gateway = self._gateway
         if gateway is None:
             return
+        self.traffic.record(peer=sid, direction="in", raw=raw)  # visible in the dashboard
         try:
             root = ET.fromstring(raw)
         except ET.ParseError:
@@ -163,6 +166,7 @@ class ServerConnectionManager:
         for sid, conn in list(self._conns.items()):
             if src in self._origins.get(sid, ()):
                 continue  # don't echo a server's own track back to it
+            self.traffic.record(peer=sid, direction="out", raw=cot)
             with contextlib.suppress(Exception):
                 await conn.send(cot)
 

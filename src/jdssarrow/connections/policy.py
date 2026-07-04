@@ -42,6 +42,42 @@ class CompositePolicy:
         return all(p.allows(message) for p in self._policies)  # type: ignore[attr-defined]
 
 
+class PairBlockPolicy:
+    """Per-pair (observer, originator) blocks — the interactive N×N communication matrix.
+
+    Holds the whole coalition pair-block map (so the authority can distribute it), but enforces
+    only *this* node's row: it drops a message when the pair ``(this node, originator)`` is
+    blocked. So the authority can say "node B must not accept from node C" and only node B
+    enforces it — true per-pair control on top of the column/row policies."""
+
+    name = "pairs"
+
+    def __init__(self, node_id: str = "", pairs: dict[str, list[str]] | None = None) -> None:
+        self.node_id = node_id
+        self._pairs: dict[str, set[str]] = {o: set(v) for o, v in (pairs or {}).items()}
+
+    def allows(self, message: JdssMessage) -> bool:
+        blocked = self._pairs.get(self.node_id)
+        return not blocked or message.header.originator_id not in blocked
+
+    def block(self, observer: str, originator: str) -> None:
+        self._pairs.setdefault(observer, set()).add(originator)
+
+    def allow(self, observer: str, originator: str) -> None:
+        peers = self._pairs.get(observer)
+        if peers:
+            peers.discard(originator)
+            if not peers:
+                self._pairs.pop(observer, None)
+
+    def replace(self, pairs: dict[str, list[str]]) -> None:
+        """Overwrite the whole pair map (used when a distributed coalition policy arrives)."""
+        self._pairs = {o: set(v) for o, v in pairs.items() if v}
+
+    def snapshot(self) -> dict[str, list[str]]:
+        return {o: sorted(v) for o, v in self._pairs.items() if v}
+
+
 class MatrixConnectionPolicy:
     """Default allow/deny plus explicit per-peer overrides (a manageable matrix row)."""
 

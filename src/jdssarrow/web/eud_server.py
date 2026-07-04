@@ -31,6 +31,7 @@ from jdssarrow.config.models import EudServerConfig
 from jdssarrow.datamodel.messages import Identification, JdssMessage, MessageHeader
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.gateway.node import SoldierNode
+from jdssarrow.web.cotlog import CotTrafficLog
 
 _EVENT_END = b"</event>"
 _EVENT_START = b"<event"
@@ -43,6 +44,7 @@ class EudServerManager:
         self._server: asyncio.Server | None = None
         self._clients: dict[int, tuple[asyncio.StreamWriter, str]] = {}  # id -> (writer, peer)
         self._origins: dict[int, set[str]] = {}  # id -> originators this client has sourced
+        self.traffic = CotTrafficLog()  # inspectable log of CoT to/from connected EUDs
         self._node: SoldierNode | None = None
         self._gateway: JdssGateway | None = None
         self._relay_nodes: set[int] = set()
@@ -134,6 +136,8 @@ class EudServerManager:
         """CoT -> JDSS for one inbound event."""
         if BRIDGE_MARKER.encode() in raw:
             return  # our own emitted CoT echoed back
+        peer = self._clients.get(cid, (None, f"eud-{cid}"))[1]
+        self.traffic.record(peer=peer, direction="in", raw=raw)  # visible in the dashboard
         try:
             root = ET.fromstring(raw)
         except ET.ParseError:
@@ -204,9 +208,10 @@ class EudServerManager:
             return
         frame = cot if cot.endswith(b"\n") else cot + b"\n"
         src = message.header.originator_id
-        for cid, (writer, _) in list(self._clients.items()):
+        for cid, (writer, peer) in list(self._clients.items()):
             if src in self._origins.get(cid, ()):
                 continue  # don't echo an EUD's own track back to it
+            self.traffic.record(peer=peer, direction="out", raw=cot)
             try:
                 writer.write(frame)
                 await writer.drain()

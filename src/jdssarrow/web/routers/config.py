@@ -5,16 +5,53 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from jdssarrow import AEP76_VOLUMES
 from jdssarrow.config.models import GatewayConfig
+from jdssarrow.datamodel import symbology
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.security.classification import Classification
 from jdssarrow.web.deps import get_gateway
 from jdssarrow.web.runtime import persist_config_section, reconfigure
 
 router = APIRouter(tags=["config"])
+
+
+@router.get("/api/symbology")
+def symbology_catalogue() -> dict:
+    """The APP-6(D)/2525D symbol catalogue this node uses, each validated for conformance."""
+    entities = []
+    for name in symbology.ENTITIES:
+        code = symbology.sidc(name)
+        entities.append(
+            {"name": name, "sidc": code, "valid": symbology.is_valid_sidc(code),
+             "parsed": symbology.parse_sidc(code)}
+        )
+    return {
+        "standard": "APP-6(D) / MIL-STD-2525D",
+        "version": symbology.VERSION,
+        "identities": {i.name.lower(): int(i) for i in symbology.StandardIdentity},
+        "statuses": {st.name.lower(): int(st) for st in symbology.Status},
+        "entities": entities,
+    }
+
+
+class _SidcIn(BaseModel):
+    sidc: str
+
+
+@router.post("/api/symbology/validate")
+def validate_symbol(body: _SidcIn) -> dict:
+    """Validate a SIDC against APP-6(D) / MIL-STD-2525D and decode its structured fields."""
+    errors = symbology.validate_sidc(body.sidc)
+    ok_shape = len(body.sidc) == 20 and body.sidc.isdigit()
+    return {
+        "sidc": body.sidc,
+        "valid": not errors,
+        "errors": errors,
+        "parsed": symbology.parse_sidc(body.sidc) if ok_shape else None,
+    }
 
 
 @router.get("/api/volumes")

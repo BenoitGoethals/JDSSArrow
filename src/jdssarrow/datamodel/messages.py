@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from jdssarrow.datamodel import symbology
 
@@ -69,13 +69,25 @@ class _Body(BaseModel):
 
 
 class Presence(_Body):
-    """Position/status heartbeat of a friendly dismounted soldier."""
+    """Position/status heartbeat of a friendly dismounted soldier.
+
+    Carries the structured tactical attributes a receiver needs to render the correct APP-6(D) /
+    2525D symbol: unit id + callsign (from the header/here), position, affiliation + unit type +
+    status (encoded in ``sidc``), heading and speed, and the header's timestamp."""
 
     type: Literal[MessageType.PRESENCE] = MessageType.PRESENCE
     location: Location
     callsign: str
     battery_pct: int | None = Field(default=None, ge=0, le=100)
+    #: course over ground in degrees true (0-360) and speed in m/s — "direction and speed".
+    course_deg: float | None = Field(default=None, ge=0, le=360)
+    speed_mps: float | None = Field(default=None, ge=0)
     sidc: str = Field(default_factory=lambda: symbology.sidc("dismounted_infantry"))
+
+    @model_validator(mode="after")
+    def _normalize_symbol(self) -> Presence:
+        self.sidc = symbology.normalize(self.sidc)  # canonical 20-digit SIDC
+        return self
 
 
 class Identification(_Body):
@@ -90,18 +102,33 @@ class Identification(_Body):
 
 
 class ContactSighting(_Body):
-    """Report of an observed contact (Contact/Sighting)."""
+    """Report of an observed contact (Contact/Sighting).
+
+    The ``identity`` (affiliation) and ``status`` attributes drive the symbol: the SIDC is kept in
+    sync with them so a receiver always renders the correct APP-6(D) / 2525D icon."""
 
     type: Literal[MessageType.CONTACT] = MessageType.CONTACT
     location: Location
     identity: symbology.StandardIdentity = symbology.StandardIdentity.HOSTILE
+    status: symbology.Status = symbology.Status.PRESENT
     description: str = ""
     strength: int | None = None
+    #: course over ground in degrees true (0-360) and speed in m/s — "direction and speed".
+    course_deg: float | None = Field(default=None, ge=0, le=360)
+    speed_mps: float | None = Field(default=None, ge=0)
     sidc: str = Field(
         default_factory=lambda: symbology.sidc(
             "hostile_contact", symbology.StandardIdentity.HOSTILE
         )
     )
+
+    @model_validator(mode="after")
+    def _sync_symbol(self) -> ContactSighting:
+        # keep the SIDC's affiliation (digit 4) + status (digit 7) consistent with the attributes,
+        # so the reported affiliation/status and the rendered symbol never disagree.
+        code = symbology.with_identity(self.sidc, self.identity)
+        self.sidc = symbology.normalize(code[:6] + str(int(self.status)) + code[7:])
+        return self
 
 
 class SketchPoint(BaseModel):

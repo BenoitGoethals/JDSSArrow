@@ -27,10 +27,17 @@ def generate_keypair() -> tuple[str, str]:
     return priv.private_bytes_raw().hex(), priv.public_key().public_bytes_raw().hex()
 
 
-def canonical_payload(version: int, default_action: str, overrides: dict) -> bytes:
+def canonical_payload(
+    version: int, default_action: str, overrides: dict, pairs: dict | None = None
+) -> bytes:
     """Deterministic bytes signed/verified for a policy update (stable key ordering)."""
     return json.dumps(
-        {"version": version, "default_action": default_action, "overrides": overrides},
+        {
+            "version": version,
+            "default_action": default_action,
+            "overrides": overrides,
+            "pairs": pairs or {},
+        },
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")

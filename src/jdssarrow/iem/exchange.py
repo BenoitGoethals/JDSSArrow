@@ -134,6 +134,13 @@ class ExchangeEngine:
     def add_handler(self, handler: MessageHandler) -> None:
         self._handlers.append(handler)
 
+    def clear_dedup(self) -> int:
+        """Forget all seen (originator, message-id) keys — the receive dedup cache."""
+        n = len(self._seen)
+        self._seen.clear()
+        self._seen_order.clear()
+        return n
+
     def on_control(self, kind: str, handler: Callable[[dict], Awaitable[None]]) -> None:
         """Register a handler for an out-of-band control message ``kind``."""
         self._control_handlers[kind] = handler

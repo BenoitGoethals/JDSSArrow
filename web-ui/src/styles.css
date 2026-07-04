@@ -201,3 +201,24 @@ button.ghost { background: transparent; color: var(--muted); border: 1px solid v
 .eud-advertise { display: flex; gap: .6rem; align-items: flex-end; margin-top: .8rem; flex-wrap: wrap; }
 .eud-advertise label { display: flex; flex-direction: column; gap: .2rem; color: var(--muted); font-size: .8rem; flex: 1; min-width: 240px; }
 .eud-advertise button { margin-top: 0; }
+
+/* CoT traffic log (TAK server / EUD bridge) */
+.cotlog { border: 1px solid var(--line); border-radius: 6px; max-height: 320px; overflow-y: auto; }
+.cotlog-head, .cotlog li { display: grid; grid-template-columns: 1.5rem 8rem 1fr 8rem 4.5rem; gap: .5rem;
+  padding: .25rem .5rem; align-items: baseline; }
+.cotlog-head { color: var(--muted); font-size: .72rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--card); }
+.cotlog ul { list-style: none; margin: 0; padding: 0; }
+.cotlog li { border-bottom: 1px solid #1e2731; font-size: .8rem; }
+.cotlog li.out { background: rgba(74, 156, 109, .06); }
+.cotlog li.received {}
+.cotlog li .dir { font-weight: 700; }
+.cotlog li.out .dir { color: var(--accent); }
+.cotlog li.in .dir { color: #4a90d9; }
+.cotlog li .from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cotlog li .time { color: var(--muted); }
+
+/* APP-6(D) military symbols */
+.milsym { display: inline-block; vertical-align: middle; }
+.milsym svg { display: inline-block; vertical-align: middle; }
+.sidc-cell { display: inline-flex; align-items: center; gap: .5rem; }
+.feed .type .milsym { margin-right: .2rem; }

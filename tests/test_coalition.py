@@ -68,6 +68,58 @@ async def test_coalition_block_propagates_to_all_nodes():
             await n.stop()
 
 
+def test_coalition_pair_route_is_not_shadowed(monkeypatch):
+    """POST /api/coalition/pair must hit the pair endpoint, not /api/coalition/{peer_id='pair'}."""
+    monkeypatch.setenv("JDSS_CONNECTIONS__POLICY_AUTHORITY", "node-a")
+    from fastapi.testclient import TestClient
+
+    from jdssarrow.web.app import create_app
+
+    with TestClient(create_app()) as c:
+        r = c.post("/api/coalition/pair?observer=node-b&originator=node-c&action=block")
+        assert r.status_code == 200
+        assert r.json()["pairs"] == {"node-b": ["node-c"]}
+        assert "pair" not in r.json()["overrides"]  # not misrouted as a column block
+
+
+async def test_coalition_pair_block_is_per_observer():
+    """A per-pair block (obs, from) is enforced only by the observer node — the interactive matrix.
+
+    Authority blocks the cell (node-b <- node-c): node-b refuses node-c, but node-a still hears it.
+    """
+    gw_a, gw_b, gw_c = _gw("node-a"), _gw("node-b"), _gw("node-c")  # node-a is authority
+    na, nb, nc = SoldierNode(gw_a), SoldierNode(gw_b), SoldierNode(gw_c)
+    rx_a, rx_b = _Collector(), _Collector()
+    na.add_handler(rx_a)
+    nb.add_handler(rx_b)
+    for n in (na, nb, nc):
+        await n.start()
+    try:
+        await gw_a.coalition_set_pair("node-b", "node-c", "block")
+        await asyncio.sleep(0.2)  # propagate to every node
+        # node-b learned + enforces the pair; other nodes carry the map but it isn't their row
+        assert gw_b.coalition_snapshot()["pairs"].get("node-b") == ["node-c"]
+
+        rx_a.origins.clear()
+        rx_b.origins.clear()
+        await nc.presence(1, 1)  # node-c transmits
+        await asyncio.sleep(0.1)
+        assert "node-c" not in rx_b.origins  # node-b blocked exactly this pair
+        assert "node-c" in rx_a.origins  # node-a is unaffected (per-observer, not global)
+
+        # allow it back → node-b hears node-c again
+        await gw_a.coalition_set_pair("node-b", "node-c", "allow")
+        await asyncio.sleep(0.2)
+        assert gw_b.coalition_snapshot()["pairs"] == {}
+        rx_b.origins.clear()
+        await nc.presence(2, 2)
+        await asyncio.sleep(0.1)
+        assert "node-c" in rx_b.origins
+    finally:
+        for n in (na, nb, nc):
+            await n.stop()
+
+
 async def test_non_authority_cannot_forge_coalition_policy():
     # node-b trusts node-a, but here node-b tries to act as authority — rejected.
     gw_a, gw_b = _gw("node-a"), _gw("node-b")

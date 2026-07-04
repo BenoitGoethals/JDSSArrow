@@ -34,6 +34,12 @@ class ArrowTelemetryBuffer:
             counts[m.type] = counts.get(m.type, 0) + 1
         return counts
 
+    def clear(self) -> int:
+        """Drop all buffered telemetry; returns how many messages were cleared."""
+        n = len(self._buf)
+        self._buf.clear()
+        return n
+
     def to_arrow_ipc(self, limit: int = 1000) -> bytes:
         """Serialize the recent window as an Arrow IPC stream."""
         return self._codec.encode_batch(self.recent(limit))

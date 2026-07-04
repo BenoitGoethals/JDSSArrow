@@ -107,3 +107,23 @@ def test_web_log_endpoints(tmp_path):
 
         app = client.get("/api/logs/app").json()
         assert isinstance(app, list)  # app log records (gateway start etc.)
+
+
+def test_purge_clears_all_message_stores():
+    """POST /api/purge empties the audit log, telemetry cache and dedup, leaving peers intact."""
+    from fastapi.testclient import TestClient
+
+    from jdssarrow.web.app import create_app
+
+    with TestClient(create_app()) as c:
+        for _ in range(4):
+            c.post("/api/publish/chat", json={"text": "x"})
+        assert len(c.get("/api/logs/messages").json()["entries"]) > 0
+        r = c.post("/api/purge")
+        assert r.status_code == 200
+        cleared = r.json()["cleared"]
+        assert cleared["audit_log"] > 0 and cleared["telemetry"] > 0
+        assert "server_cot_log" in cleared and "eud_cot_log" in cleared  # bridge logs cleared too
+        # everything is empty afterwards
+        assert c.get("/api/logs/messages").json()["entries"] == []
+        assert c.get("/api/monitor/snapshot").json()["buffered"] == 0

@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
+from jdssarrow.datamodel import symbology
 from jdssarrow.datamodel.messages import ChatMessage, ContactSighting, Location, Presence
+from jdssarrow.datamodel.symbology import StandardIdentity
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.web.deps import get_gateway
 
@@ -92,6 +94,10 @@ class PresenceIn(BaseModel):
     lon: float
     callsign: str = "WEB-1"
     battery_pct: int | None = None
+    #: APP-6D standard identity (0-6). Presence is friendly by default.
+    identity: int | None = None
+    #: optional caller-supplied SIDC; used only if it is a valid 20-digit 2525D code.
+    sidc: str | None = None
 
 
 class ChatIn(BaseModel):
@@ -103,15 +109,42 @@ class ContactIn(BaseModel):
     lat: float
     lon: float
     description: str = ""
+    #: APP-6D standard identity (0-6). Defaults to HOSTILE for a contact sighting.
+    identity: int | None = None
+    #: optional caller-supplied SIDC; used only if it is a valid 20-digit 2525D code.
+    sidc: str | None = None
+    strength: int | None = None
+
+
+def _identity(value: int | None, default: StandardIdentity) -> StandardIdentity:
+    """Coerce an incoming identity digit to a StandardIdentity, else the default."""
+    try:
+        return StandardIdentity(int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _compliant_sidc(raw: str | None, identity: StandardIdentity, entity: str) -> str:
+    """Return a valid 20-digit APP-6D SIDC whose affiliation digit matches ``identity``.
+
+    If the caller passed a conforming SIDC we keep its symbol set / entity and only
+    re-stamp the affiliation; otherwise we synthesise one from a known entity. Either
+    way the receiving client renders the correct symbol from the SIDC attributes.
+    """
+    if raw and symbology.is_valid_sidc(raw):
+        return symbology.with_identity(raw, identity)
+    return symbology.sidc(entity, identity)
 
 
 @router.post("/api/publish/presence")
 async def publish_presence(body: PresenceIn, gateway: JdssGateway = Depends(get_gateway)) -> dict:
+    identity = _identity(body.identity, StandardIdentity.FRIEND)
     msg = await gateway.publish(
         Presence(
             location=Location(lat=body.lat, lon=body.lon),
             callsign=body.callsign,
             battery_pct=body.battery_pct,
+            sidc=_compliant_sidc(body.sidc, identity, "dismounted_infantry"),
         )
     )
     return {"message_id": msg.header.message_id}
@@ -125,7 +158,14 @@ async def publish_chat(body: ChatIn, gateway: JdssGateway = Depends(get_gateway)
 
 @router.post("/api/publish/contact")
 async def publish_contact(body: ContactIn, gateway: JdssGateway = Depends(get_gateway)) -> dict:
+    identity = _identity(body.identity, StandardIdentity.HOSTILE)
     msg = await gateway.publish(
-        ContactSighting(location=Location(lat=body.lat, lon=body.lon), description=body.description)
+        ContactSighting(
+            location=Location(lat=body.lat, lon=body.lon),
+            identity=identity,
+            description=body.description,
+            strength=body.strength,
+            sidc=_compliant_sidc(body.sidc, identity, "hostile_contact"),
+        )
     )
     return {"message_id": msg.header.message_id}

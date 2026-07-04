@@ -27,7 +27,11 @@ from collections.abc import Callable
 from jdssarrow.capabilities import CapabilityError, CapabilityMatrix
 from jdssarrow.config.models import GatewayConfig
 from jdssarrow.connections.distributor import PolicyDistributor
-from jdssarrow.connections.policy import CompositePolicy, MatrixConnectionPolicy
+from jdssarrow.connections.policy import (
+    CompositePolicy,
+    MatrixConnectionPolicy,
+    PairBlockPolicy,
+)
 from jdssarrow.connections.signing import AuthoritySigner, AuthorityVerifier
 from jdssarrow.datamodel.messages import JdssMessage, MessageHeader
 from jdssarrow.iem.exchange import ExchangeEngine
@@ -77,7 +81,11 @@ class JdssGateway:
         # coalition-wide policy distributed by the authority. Effective = both must allow.
         self.policy: ConnectionPolicy = self._build_policy()
         self.coalition: MatrixConnectionPolicy = self._build_coalition_policy()
-        self._effective_policy: ConnectionPolicy = CompositePolicy(self.policy, self.coalition)
+        # per-pair (observer, originator) blocks — the interactive communication matrix
+        self.pairs = PairBlockPolicy(config.identity.node_id)
+        self._effective_policy: ConnectionPolicy = CompositePolicy(
+            self.policy, self.coalition, self.pairs
+        )
         self._distributor: PolicyDistributor | None = None
 
         # Capability matrix: which message types this node may receive / emit.
@@ -209,6 +217,7 @@ class JdssGateway:
                 interval_s=self.config.gossip.interval_s,
                 signer=signer,
                 verifier=verifier,
+                pair_policy=self.pairs,
             )
             self._distributor.attach()
 
@@ -264,6 +273,18 @@ class JdssGateway:
         if not self.capabilities.can_emit(message.type):
             raise CapabilityError(f"emitting {message.type} is disabled on this node")
         return await self.engine.publish(message)
+
+    def purge_messages(self) -> dict[str, int]:
+        """Delete all buffered/logged messages: the message audit log, the telemetry cache and
+        the receive dedup cache. Returns how many entries each store dropped. Peers and Prometheus
+        counters are left intact (identity, not messages)."""
+        cleared = {
+            "audit_log": self.metrics.audit.clear(),
+            "telemetry": self.metrics.telemetry.clear(),
+        }
+        if self._engine is not None:
+            cleared["dedup_cache"] = self._engine.clear_dedup()
+        return cleared
 
     async def ingest_from_bridge(self, message: JdssMessage) -> None:
         """Inject a message produced by a CoT/ATAK bridge under *its own* originator.
@@ -370,6 +391,8 @@ class JdssGateway:
             "version": d.version if d else (1 if is_authority else 0),
             "enabled": cfg.policy_authority is not None,
             "signed": bool(d.signed) if d else (cfg.authority_public_key is not None),
+            # per-pair (observer -> blocked originators) — the interactive communication matrix
+            "pairs": self.pairs.snapshot(),
         }
 
     async def coalition_set(self, peer_id: str, action: str) -> dict:
@@ -384,6 +407,18 @@ class JdssGateway:
             await self._distributor.reset(peer_id)
         else:
             raise ValueError("action must be allow, block or reset")
+        return self.coalition_snapshot()
+
+    async def coalition_set_pair(self, observer: str, originator: str, action: str) -> dict:
+        """Authority-only: block/allow a single (observer, originator) pair network-wide."""
+        if self._distributor is None:
+            raise PermissionError("coalition policy distribution is not enabled")
+        if action == "block":
+            await self._distributor.block_pair(observer, originator)
+        elif action in ("allow", "reset"):
+            await self._distributor.allow_pair(observer, originator)
+        else:
+            raise ValueError("action must be block, allow or reset")
         return self.coalition_snapshot()
 
     def health(self) -> dict:
