@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from xml.etree import ElementTree as ET
 
 from jdssarrow.bridges.cot import (
@@ -27,7 +28,7 @@ from jdssarrow.bridges.cot import (
     message_to_cot,
 )
 from jdssarrow.config.models import EudServerConfig
-from jdssarrow.datamodel.messages import JdssMessage, MessageHeader
+from jdssarrow.datamodel.messages import Identification, JdssMessage, MessageHeader
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.gateway.node import SoldierNode
 
@@ -41,6 +42,7 @@ class EudServerManager:
         self._cfg: EudServerConfig | None = None
         self._server: asyncio.Server | None = None
         self._clients: dict[int, tuple[asyncio.StreamWriter, str]] = {}  # id -> (writer, peer)
+        self._origins: dict[int, set[str]] = {}  # id -> originators this client has sourced
         self._node: SoldierNode | None = None
         self._gateway: JdssGateway | None = None
         self._relay_nodes: set[int] = set()
@@ -82,6 +84,7 @@ class EudServerManager:
             with contextlib.suppress(Exception):
                 writer.close()
         self._clients.clear()
+        self._origins.clear()
         if server is not None:
             server.close()
             with contextlib.suppress(Exception):
@@ -95,7 +98,10 @@ class EudServerManager:
         cid = id(writer)
         peer = writer.get_extra_info("peername")
         self._clients[cid] = (writer, _fmt_peer(peer))
-        originator = f"atak-{cid}"  # provisional until we learn the device's self-SA uid
+        self._origins[cid] = set()
+        # per-connection state: provisional originator until we learn the device's self-SA uid,
+        # and the set of originators we've already announced an Identification for.
+        state = {"originator": f"atak-{cid}", "identified": set()}
         buf = b""
         try:
             while True:
@@ -113,62 +119,100 @@ class EudServerManager:
                         buf = buf[end:]  # stray bytes before an event
                         continue
                     doc, buf = buf[start:end], buf[end:]
-                    originator = await self._ingest(doc, originator)
+                    await self._ingest(doc, writer, cid, state)
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
             self._clients.pop(cid, None)
+            self._origins.pop(cid, None)
             with contextlib.suppress(Exception):
                 writer.close()
 
-    async def _ingest(self, raw: bytes, originator: str) -> str:
-        """CoT -> JDSS. Returns the (possibly updated) per-connection originator id."""
+    async def _ingest(
+        self, raw: bytes, writer: asyncio.StreamWriter, cid: int, state: dict
+    ) -> None:
+        """CoT -> JDSS for one inbound event."""
         if BRIDGE_MARKER.encode() in raw:
-            return originator  # our own emitted CoT echoed back
-        if cot_is_stale(raw):
-            return originator
+            return  # our own emitted CoT echoed back
         try:
             root = ET.fromstring(raw)
         except ET.ParseError:
-            return originator
-        # adopt the device's stable uid from its self-SA so it's one coalition peer, not many
-        uid, ctype = root.get("uid"), root.get("type", "")
-        if uid and ctype.startswith("a-f"):
-            originator = f"atak-{uid}"
+            return
+        ctype = root.get("type", "")
+        if ctype == "t-x-c-t":
+            await self._pong(writer)  # ATAK keepalive ping → reply so the link stays healthy
+            return
+        if ctype.startswith("t-x") or ctype.startswith("t-b"):
+            return  # other TAK control (protocol negotiation, delete, bits) — not mappable
+        if cot_is_stale(raw):
+            return
         gateway = self._gateway
         if gateway is None:
-            return originator
+            return
+        # adopt the device's stable uid from its self-SA so it's one coalition peer, not many
+        uid = root.get("uid")
+        if uid and ctype.startswith("a-f"):
+            state["originator"] = f"atak-{uid}"
+        originator = state["originator"]
         message = cot_to_message(raw, originator)
-        if message is not None:
-            # publish under the EUD's *own* originator (not this node's identity), so each ATAK
-            # device is a distinct coalition peer and doesn't collide with the web node's presence.
-            c = gateway.config
-            header = MessageHeader(
-                originator_id=originator,
-                network_id=c.network.network_id,
-                classification=c.classification.level,
-                releasable_to=c.classification.releasable_to,
-            )
+        if message is None:
+            return
+        self._origins[cid].add(originator)
+
+        # announce an Identification the first time we learn this EUD's callsign, so it shows up as
+        # a named peer in the dashboard/matrix (Presence alone gives a callsign but no role/unit).
+        callsign = getattr(message.body, "callsign", None)
+        if callsign and originator not in state["identified"]:
+            state["identified"].add(originator)
+            ident = Identification(callsign=callsign, unit="ATAK EUD", role="atak", nation="")
             with contextlib.suppress(Exception):
-                await gateway.engine.publish(JdssMessage(header=header, body=message.body))
-        return originator
+                await gateway.ingest_from_bridge(self._message(originator, ident))
+
+        with contextlib.suppress(Exception):
+            await gateway.ingest_from_bridge(self._message(originator, message.body))
+
+    def _message(self, originator: str, body: object) -> JdssMessage:
+        c = self._gateway.config  # type: ignore[union-attr]
+        header = MessageHeader(
+            originator_id=originator,
+            network_id=c.network.network_id,
+            classification=c.classification.level,
+            releasable_to=c.classification.releasable_to,
+        )
+        return JdssMessage(header=header, body=body)  # type: ignore[arg-type]
+
+    async def _pong(self, writer: asyncio.StreamWriter) -> None:
+        now = datetime.now(UTC)
+        iso, stale = now.isoformat(), (now + timedelta(seconds=20)).isoformat()
+        pong = (
+            f'<event version="2.0" uid="takPong" type="t-x-c-t-r" how="m-g" '
+            f'time="{iso}" start="{iso}" stale="{stale}">'
+            f'<point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/></event>\n'
+        ).encode()
+        with contextlib.suppress(Exception):
+            writer.write(pong)
+            await writer.drain()
 
     async def _emit(self, message: JdssMessage) -> None:
-        """JDSS -> CoT: stream a JDSS message to every connected EUD."""
+        """JDSS -> CoT: stream a JDSS message to every connected EUD (except its source)."""
         if not self._clients:
             return
         if message.header.originator_id == self._node_id:
-            return  # never echo our own (incl. CoT-sourced) traffic back out
+            return  # never emit our own node's originated traffic
         cot = message_to_cot(message, stale_s=self._stale_s)
         if cot is None:
             return
         frame = cot if cot.endswith(b"\n") else cot + b"\n"
+        src = message.header.originator_id
         for cid, (writer, _) in list(self._clients.items()):
+            if src in self._origins.get(cid, ()):
+                continue  # don't echo an EUD's own track back to it
             try:
                 writer.write(frame)
                 await writer.drain()
             except Exception:
                 self._clients.pop(cid, None)
+                self._origins.pop(cid, None)
                 with contextlib.suppress(Exception):
                     writer.close()
 

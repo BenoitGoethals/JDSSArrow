@@ -265,6 +265,16 @@ class JdssGateway:
             raise CapabilityError(f"emitting {message.type} is disabled on this node")
         return await self.engine.publish(message)
 
+    async def ingest_from_bridge(self, message: JdssMessage) -> None:
+        """Inject a message produced by a CoT/ATAK bridge under *its own* originator.
+
+        Broadcasts it to the coalition **and** folds it into this node's own picture and local
+        relays (so a bridged EUD/server shows up in this node's peers/matrix and is fanned out to
+        the other bridges). Unlike :meth:`publish`, the originator is preserved as-is (not this
+        node's identity), so each bridged source is a distinct coalition peer."""
+        await self.engine.publish(message)
+        await self.engine.deliver_local(message)
+
     # ------------------------------------------------------------ capabilities
     def capabilities_snapshot(self) -> dict:
         return self.capabilities.snapshot()

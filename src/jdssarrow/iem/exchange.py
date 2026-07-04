@@ -159,6 +159,18 @@ class ExchangeEngine:
         self._remember(message)  # so our own repeats/echoes are ignored on receive
         return message
 
+    async def deliver_local(self, message: JdssMessage) -> None:
+        """Fold a locally-sourced message (from a CoT/ATAK bridge) into this node's own picture and
+        handlers, exactly as if it had arrived from the network.
+
+        The bridge also :meth:`publish`es it to the coalition; ``publish`` remembers the id, so the
+        multicast loopback of that frame is deduped and the message is not processed twice. This is
+        what makes bridged EUDs/servers show up in *this* node's peers, matrix and relays (the
+        loopback alone can't, because a node dedups its own transmissions)."""
+        self._metrics.node_seen(message.header.originator_id)
+        self._metrics.record_received(message)
+        await self._dispatch(message)
+
     async def publish_control(self, kind: str, data: dict) -> None:
         """Broadcast an out-of-band, HMAC-protected control message (not a JDSSDM message).
 

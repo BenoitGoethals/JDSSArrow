@@ -19,6 +19,7 @@ import contextlib
 import os
 import tempfile
 from collections.abc import Awaitable, Callable, Iterable
+from xml.etree import ElementTree as ET
 
 from jdssarrow.bridges.cot import (
     BRIDGE_MARKER,
@@ -28,7 +29,7 @@ from jdssarrow.bridges.cot import (
 )
 from jdssarrow.bridges.takserver import TakServerConnector
 from jdssarrow.config.models import ServerConnection
-from jdssarrow.datamodel.messages import JdssMessage
+from jdssarrow.datamodel.messages import Identification, JdssMessage, MessageHeader
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.gateway.node import SoldierNode
 
@@ -45,6 +46,8 @@ class ServerConnectionManager:
         self._gateway: JdssGateway | None = None
         self._relay_nodes: set[int] = set()  # node ids we've already attached the relay to
         self._tmp: dict[str, list[str]] = {}  # per-server temp PEM files to clean up
+        self._origins: dict[str, set[str]] = {}  # server id -> originators it has sourced
+        self._identified: set[str] = set()  # originators we've announced an Identification for
 
     # ------------------------------------------------------------------ wiring
     def attach(self, node: SoldierNode, gateway: JdssGateway) -> None:
@@ -98,11 +101,12 @@ class ServerConnectionManager:
         if conn is not None:
             with contextlib.suppress(Exception):
                 await conn.stop()
+        self._origins.pop(sid, None)
         _cleanup_temp(self._tmp.pop(sid, []))
 
     # ------------------------------------------------------------------ bridging
     async def _on_cot(self, sid: str, raw: bytes) -> None:
-        """CoT -> JDSS: re-publish an inbound server track onto the JDSS network."""
+        """CoT -> JDSS: re-publish an inbound server track onto the JDSS net + local picture."""
         if BRIDGE_MARKER.encode() in raw:
             return  # our own emitted CoT echoed back
         if cot_is_stale(raw):
@@ -110,22 +114,55 @@ class ServerConnectionManager:
         gateway = self._gateway
         if gateway is None:
             return
-        message = cot_to_message(raw, self._node_id)
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            return
+        ctype = root.get("type", "")
+        if ctype.startswith("t-x") or ctype.startswith("t-b"):
+            return  # TAK control (ping/pong, delete, negotiation) — not mappable
+        # a stable per-track originator (uid-scoped to this server), so each remote client is a
+        # distinct coalition peer rather than collapsing onto this node's identity.
+        uid = root.get("uid") or "track"
+        originator = f"tak-{sid}-{uid}"
+        message = cot_to_message(raw, originator)
         if message is None:
             return
+        self._origins.setdefault(sid, set()).add(originator)
+
+        callsign = getattr(message.body, "callsign", None)
+        if callsign and originator not in self._identified:
+            self._identified.add(originator)
+            ident = Identification(callsign=callsign, unit=f"TAK/{sid}", role="tak", nation="")
+            with contextlib.suppress(Exception):
+                await gateway.ingest_from_bridge(self._message(originator, ident))
+
         with contextlib.suppress(Exception):
-            await gateway.publish(message.body)
+            await gateway.ingest_from_bridge(self._message(originator, message.body))
+
+    def _message(self, originator: str, body: object) -> JdssMessage:
+        c = self._gateway.config  # type: ignore[union-attr]
+        header = MessageHeader(
+            originator_id=originator,
+            network_id=c.network.network_id,
+            classification=c.classification.level,
+            releasable_to=c.classification.releasable_to,
+        )
+        return JdssMessage(header=header, body=body)  # type: ignore[arg-type]
 
     async def _emit(self, message: JdssMessage) -> None:
-        """JDSS -> CoT: fan a JDSS message out to every connected server."""
+        """JDSS -> CoT: fan a JDSS message out to every connected server (except its source)."""
         if not self._conns:
             return
         if message.header.originator_id == self._node_id:
-            return  # don't echo our own (incl. CoT-sourced) traffic back out
+            return  # don't echo our own node's originated traffic
         cot = message_to_cot(message, stale_s=self._stale_s)
         if cot is None:
             return
-        for conn in list(self._conns.values()):
+        src = message.header.originator_id
+        for sid, conn in list(self._conns.items()):
+            if src in self._origins.get(sid, ()):
+                continue  # don't echo a server's own track back to it
             with contextlib.suppress(Exception):
                 await conn.send(cot)
 
