@@ -40,11 +40,25 @@ def create_app(config_path: str | None = None) -> FastAPI:
         app.state.gateway = gateway
         app.state.node = node
         from jdssarrow.simulator.manager import SimulationManager
+        from jdssarrow.web.eud_server import EudServerManager
+        from jdssarrow.web.servers import ServerConnectionManager
 
         app.state.sim_manager = SimulationManager()
+        # live CoT/TAK server connections (CRUD-managed from the Configuration tab)
+        server_manager = ServerConnectionManager()
+        server_manager.attach(node, gateway)
+        await server_manager.reconcile(config.servers)
+        app.state.server_manager = server_manager
+        # built-in TAK server so ATAK EUDs connect directly to this node
+        eud_server = EudServerManager()
+        eud_server.attach(node, gateway)
+        await eud_server.reconfigure(config.eud_server)
+        app.state.eud_server = eud_server
         try:
             yield
         finally:
+            await app.state.eud_server.stop()
+            await app.state.server_manager.stop()
             await app.state.sim_manager.stop()
             await app.state.node.stop()
 
@@ -59,7 +73,29 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
     register_routers(app)
+    _mount_web_ui(app)
     return app
+
+
+def _mount_web_ui(app: FastAPI) -> None:
+    """Serve the built React dashboard (``web-ui/dist``) at ``/`` when present.
+
+    Only mounts when the directory exists, so dev/test imports of the app (which run without a
+    built frontend) are unaffected. The API routers are registered *before* this call, so
+    ``/api``, ``/metrics`` and ``/ws`` keep precedence over this SPA catch-all mount.
+
+    The directory is taken from ``JDSS_WEB_UI_DIR`` (set in the Docker image) and otherwise
+    falls back to the repo-relative ``web-ui/dist`` for local runs after ``npm run build``.
+    """
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    configured = os.environ.get("JDSS_WEB_UI_DIR")
+    default = Path(__file__).resolve().parents[3] / "web-ui" / "dist"
+    dist = Path(configured) if configured else default
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="web-ui")
 
 
 #: module-level ASGI app for `uvicorn jdssarrow.web.app:app`.

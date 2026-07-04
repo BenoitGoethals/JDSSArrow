@@ -1,0 +1,26 @@
+# One-container deployment of JDSSArrow: FastAPI backend + built dashboard on :8000.
+#   docker compose up -d --build
+services:
+  jdssarrow:
+    build:
+      context: .
+    image: jdssarrow:latest
+    container_name: jdssarrow
+    ports:
+      - "${JDSS_PORT:-8000}:8000"
+      # built-in ATAK/EUD TAK server — must match the port set in the dashboard (default 8087)
+      - "${JDSS_EUD_PORT:-8087}:8087"
+    environment:
+      # Point at a mounted config to override the built-in defaults (optional).
+      # JDSS_CONFIG: /config/node.yaml
+      JDSS_WEB_UI_DIR: /app/web-ui/dist
+    # Mount a config file if you want to override defaults:
+    # volumes:
+    #   - ./examples/node-a.yaml:/config/node.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/metrics').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,47 @@
+# OpenTAKServer bridge node — the JDSS side of an ATAK/CoT <-> JDSS bridge to OpenTAKServer.
+#
+# This is a normal coalition JDSS node config; the OpenTAKServer connection (host, port, TLS,
+# certs) is passed on the command line, not in this file. Run one of:
+#
+#   # OTS plaintext TCP streaming port (8088) — anonymous, no auth
+#   jdssarrow bridge atak --config examples/node-ots.yaml --tak-server ots.example.org:8088
+#
+#   # OTS SSL streaming port (8089) — client cert whose CommonName is a registered OTS user
+#   jdssarrow bridge atak --config examples/node-ots.yaml \
+#       --tak-server ots.example.org:8089 --tak-tls \
+#       --tak-cert ots-client.pem --tak-key ots-client.key --tak-cacert ots-ca.pem
+#
+# OpenTAKServer streams legacy XML CoT (TAK protocol v0), which is exactly what the bridge speaks.
+# Note OTS uses 8088 for plaintext TCP (the bridge's non-TLS default 8087 is the FreeTAKServer /
+# official-TAK convention), so pass :8088 explicitly. See README "OpenTAKServer".
+
+identity:
+  node_id: node-ots
+  callsign: TAK-GW
+  unit: HQ/1-501
+  nation: BEL
+  role: commandpost   # a gateway feeding coalition tracks to/from OpenTAKServer
+
+plugins:
+  codec: xml          # Vol II — CoT is XML, and the bridge maps CoT <-> JDSSDM
+  transport: udp      # Vol IV — joins the coalition net over real UDP multicast
+  security: psk       # Vol I  — HMAC-SHA256 on the JDSS side (OTS side is plain CoT)
+  bearer: simulated
+  allocator: default
+
+network:
+  network_id: coalition-alpha   # same network → same derived multicast group as node A
+  repeat: 3
+  psk: shared-coalition-secret  # must match the coalition to authenticate JDSS traffic
+
+classification:
+  level: 1            # NATO RESTRICTED
+  releasable_to: REL BEL NLD DEU
+
+connections:
+  policy_authority: node-a      # trust node-a for coalition-wide policy
+  authority_public_key: deebe67c48d3c61f3dbe40074e752b4457cf79c2286079a9c0a78649416f6d4d
+
+web:
+  port: 8003
+  peer_timeout_s: 15

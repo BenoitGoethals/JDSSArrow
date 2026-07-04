@@ -41,7 +41,7 @@ async def build_and_start(config: GatewayConfig) -> tuple[JdssGateway, SoldierNo
     return gateway, node
 
 
-def persist_config_section(app: FastAPI, section: str, data: dict[str, Any]) -> bool:
+def persist_config_section(app: FastAPI, section: str, data: Any) -> bool:
     """Merge one section into the on-disk config file, if the app has a config store.
 
     Used to persist live edits (e.g. the capability matrix) so they survive a restart.
@@ -82,6 +82,18 @@ async def reconfigure(app: FastAPI, patch: dict[str, Any]) -> GatewayConfig:
     gateway, node = await build_and_start(new_config)
     app.state.gateway = gateway
     app.state.node = node
+
+    # re-point the live server connections at the fresh node and align them with the new config
+    server_manager = getattr(app.state, "server_manager", None)
+    if server_manager is not None:
+        server_manager.attach(node, gateway)
+        await server_manager.reconcile(new_config.servers)
+
+    # likewise re-point and re-apply the built-in ATAK/EUD server
+    eud_server = getattr(app.state, "eud_server", None)
+    if eud_server is not None:
+        eud_server.attach(node, gateway)
+        await eud_server.reconfigure(new_config.eud_server)
 
     store = getattr(app.state, "config_store", None)
     if store is not None:

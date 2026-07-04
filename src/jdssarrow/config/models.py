@@ -79,6 +79,44 @@ class CapabilitiesConfig(BaseModel):
     emit: dict[str, bool] = Field(default_factory=dict)
 
 
+class ServerConnection(BaseModel):
+    """A CoT/TAK server this node bridges to over TCP (optionally mutual TLS).
+
+    Managed (CRUD) at runtime from the Configuration tab. Each enabled entry drives a live,
+    auto-reconnecting connector; JDSS traffic from other nodes is relayed out as CoT and inbound
+    CoT is re-published onto the JDSS network. Works with OpenTAKServer, FreeTAKServer and TAK
+    Server (see README "OpenTAKServer": plaintext 8088, SSL 8089 with a client cert)."""
+
+    id: str
+    name: str = ""
+    host: str = "127.0.0.1"
+    port: int = Field(default=8089, ge=1, le=65535)
+    tls: bool = False
+    verify: bool = True  # verify the server certificate (TLS only)
+    # cert/key/CA for mutual TLS: PEM content (e.g. imported from a .p12) or a filesystem path.
+    # The client cert's CN must be a registered TAK user.
+    client_cert: str | None = None
+    client_key: str | None = None
+    cacert: str | None = None
+    enabled: bool = True
+
+
+class EudServerConfig(BaseModel):
+    """Built-in CoT/TAK server so ATAK / WinTAK / iTAK EUDs connect *directly* to this node.
+
+    When enabled the node listens on a TCP port; a connecting EUD's CoT is translated to JDSS and
+    published on the coalition net, and coalition traffic is streamed back to the EUD as CoT. In
+    ATAK: add a TAK Server pointing at this host:port (TCP, no SSL). Managed from the Configuration
+    tab."""
+
+    enabled: bool = False
+    host: str = "0.0.0.0"  # bind address; 0.0.0.0 = all interfaces
+    port: int = Field(default=8087, ge=1, le=65535)
+    #: address ATAK should point at (the host's LAN IP or a public/NAT address). Auto-detection
+    #: returns the container's internal IP under Docker, so set this for reachable clients.
+    advertised_host: str | None = None
+
+
 class GossipConfig(BaseModel):
     """Peer-digest gossip: each node periodically broadcasts the row of the connection
     matrix it can see (who it has heard from), so every node can assemble the full matrix."""
@@ -106,3 +144,7 @@ class GatewayConfig(BaseSettings):
     capabilities: CapabilitiesConfig = Field(default_factory=CapabilitiesConfig)
     gossip: GossipConfig = Field(default_factory=GossipConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    #: CoT/TAK servers this node bridges to (managed from the Configuration tab).
+    servers: list[ServerConnection] = Field(default_factory=list)
+    #: built-in TAK server so ATAK EUDs can connect directly to this node.
+    eud_server: EudServerConfig = Field(default_factory=EudServerConfig)

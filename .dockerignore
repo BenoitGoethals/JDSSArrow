@@ -1,0 +1,22 @@
+# Keep the build context small and reproducible.
+.git
+.idea
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.py[cod]
+
+# Node/build artifacts — the image rebuilds these itself.
+web-ui/node_modules
+web-ui/dist
+node_modules
+
+# Local/dev cruft
+tests
+*.log
+.DS_Store
+Dockerfile
+.dockerignore
+docker-compose.yml

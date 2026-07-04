@@ -158,6 +158,44 @@ export interface MessageEvent {
   snapshot?: Snapshot;
 }
 
+// A CoT/TAK server connection (editable fields sent to the API).
+export interface ServerInput {
+  name: string;
+  host: string;
+  port: number;
+  tls: boolean;
+  verify: boolean;
+  client_cert: string | null;
+  client_key: string | null;
+  cacert: string | null;
+  enabled: boolean;
+}
+
+// A server connection as returned by the API (input fields + live status).
+export interface ServerConnection extends ServerInput {
+  id: string;
+  state: "connected" | "connecting" | "disabled" | "stopped";
+  connected: boolean;
+  connects: number;
+  reconnects: number;
+  queued: number;
+  dropped: number;
+  last_error: string | null;
+}
+
+// Built-in ATAK/EUD TAK server status + config.
+export interface EudStatus {
+  enabled: boolean;
+  listening: boolean;
+  host: string;
+  port: number;
+  advertised_host: string | null;
+  clients: string[];
+  client_count: number;
+  last_error: string | null;
+  lan_ip: string;
+}
+
 async function json<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
@@ -225,7 +263,36 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     }),
+
+  // ---- CoT/TAK server connections (CRUD) ----
+  servers: () => json<{ servers: ServerConnection[] }>("/api/servers"),
+  createServer: (body: ServerInput) => jsonBody<{ servers: ServerConnection[] }>("/api/servers", "POST", body),
+  updateServer: (id: string, body: ServerInput) =>
+    jsonBody<{ servers: ServerConnection[] }>(`/api/servers/${id}`, "PUT", body),
+  deleteServer: (id: string) => jsonBody<{ servers: ServerConnection[] }>(`/api/servers/${id}`, "DELETE"),
+  testServer: (body: ServerInput) => jsonBody<{ ok: boolean; detail: string }>("/api/servers/test", "POST", body),
+  importPkcs12: (p12_base64: string, password: string) =>
+    jsonBody<{ client_cert: string; client_key: string; cacert: string | null; common_name: string }>(
+      "/api/servers/pkcs12",
+      "POST",
+      { p12_base64, password }
+    ),
+
+  // ---- built-in ATAK/EUD TAK server ----
+  eud: () => json<EudStatus>("/api/eud"),
+  setEud: (body: { enabled: boolean; host?: string; port: number; advertised_host?: string | null }) =>
+    jsonBody<EudStatus>("/api/eud", "PUT", body),
 };
+
+async function jsonBody<T>(url: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`${method} ${url}: ${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
 
 /** A live event stream that reconnects itself if the backend restarts or drops. */
 export interface EventStream {

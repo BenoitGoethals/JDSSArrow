@@ -168,10 +168,18 @@ The React SPA is organised into tabs:
 
 - **Dashboard** — KPI strip (status, uptime, peers, messages, rejected, coalition version,
   classification) plus health, connected peers, volumes, message injection and the live feed.
-- **Configuration** — the hot-reloadable pluggable config editor, node identity/network, and a
-  **capability matrix**: per-message-type receive/emit on-off permissions (`GET/POST
+- **Configuration** — the hot-reloadable pluggable config editor, node identity/network, a
+  **capability matrix** (per-message-type receive/emit on-off permissions; `GET/POST
   /api/capabilities`, enforced in the IEM — inbound disallowed types dropped with reason
-  `capability`, emit of a disallowed type raises `CapabilityError` → HTTP 403).
+  `capability`, emit of a disallowed type raises `CapabilityError` → HTTP 403), and
+  **CoT/TAK server connections** — full CRUD (`GET/POST/PUT/DELETE /api/servers`,
+  `POST /api/servers/test`) over the servers this node bridges to (e.g. OpenTAKServer). Each
+  enabled entry drives a live, auto-reconnecting connector that relays coalition JDSS traffic out
+  as CoT and inbound CoT back onto the network; edits apply immediately and persist to the config
+  file (`servers:` section). A **built-in ATAK/EUD TAK server** (`GET/PUT /api/eud`,
+  `eud_server:` section) can also be toggled on so ATAK/WinTAK/iTAK devices connect *directly* to
+  this node — it listens on a TCP port and translates CoT↔JDSS per connected EUD (each EUD shows
+  up as its own coalition peer), so no separate TAK server is needed.
 - **Connections & Policy** — local connection management, the gossip-distributed **coalition
   policy** (with `🔏 Ed25519-signed` status), and the live connection matrix.
 - **Simulation** — **start/stop a live simulation** (`SimulationManager`, `GET/POST /api/sim`).
@@ -198,6 +206,36 @@ jdssarrow bridge atak --config examples/node-c.yaml \
     --tak-server tak.example.mil:8089 --tak-tls \
     --tak-cert client.pem --tak-key client.key --tak-cacert ca.pem
 ```
+
+### OpenTAKServer
+
+The TAK Server connector interoperates with **OpenTAKServer (OTS)**, which streams legacy XML CoT
+(TAK protocol version 0) — exactly what the bridge speaks, so no protobuf negotiation is needed.
+Two paths work (verified in `tests/test_opentakserver_interop.py`, which reproduces OTS's own
+EUD-handler framing and cert-auth logic):
+
+```bash
+# OTS plaintext TCP streaming port (8088) — anonymous, no auth
+jdssarrow bridge atak --config examples/node-c.yaml --tak-server ots.example.org:8088
+
+# OTS SSL streaming port (8089) — client cert whose CN is a registered OTS user
+jdssarrow bridge atak --config examples/node-c.yaml \
+    --tak-server ots.example.org:8089 --tak-tls \
+    --tak-cert ots-client.pem --tak-key ots-client.key --tak-cacert ots-ca.pem
+```
+
+OTS's SSL port **requires authentication**: a client certificate whose CommonName names a known
+OTS user is authenticated by cert alone (no `<auth>` username/password message is sent), while an
+unenrolled cert connects but has its CoT ignored. The plaintext **8088** port is anonymous. Note
+OTS uses **8088** for TCP (the bridge's non-TLS default of `8087` is the FreeTAKServer/official-TAK
+convention), so pass `:8088` explicitly.
+
+**From the web console (no CLI).** The **Configuration → CoT/TAK Server Connections** panel does the
+same thing without a shell: add a server (host `192.168.0.202`, port `8088`, TLS off) and it
+connects live. For TLS (8089), tick **TLS** and **import a `.p12`/`.pfx`** (client cert + key + CA)
+with its password directly in the browser — `POST /api/servers/pkcs12` decrypts it into PEM
+material (the connection stores the PEMs, so no file paths are involved). The imported certificate's
+CommonName must be a registered OTS user.
 
 Mapping (`bridges/cot.py`): CoT `a-f-*` ↔ Presence, `a-h/-u/-n-*` ↔ ContactSighting, GeoChat
 `b-t-f` ↔ Chat, `u-d-*`/`b-m-p-*` ↔ Overlay, medevac `b-r-f-h-c` ↔ CasevacRequest. Loop-safe

@@ -107,9 +107,24 @@ def main() -> None:
     br.add_argument("--cot-group", default="239.2.3.1", help="ATAK CoT multicast group")
     br.add_argument("--cot-port", type=int, default=6969, help="ATAK CoT multicast port")
     br.add_argument("--cot-stale", type=int, default=60, help="CoT track stale window (seconds)")
-    br.add_argument("--tak-server", default=None, help="TAK Server host:port (TCP), not multicast")
-    br.add_argument("--tak-tls", action="store_true", help="use TLS to the TAK Server")
-    br.add_argument("--tak-cert", default=None, help="client certificate (PEM) for mutual TLS")
+    br.add_argument(
+        "--tak-server",
+        default=None,
+        help="TAK Server host[:port] (TCP), not multicast. Works with OpenTAKServer, FreeTAKServer "
+        "and official TAK Server. Default port: 8089 with --tak-tls, else 8087. "
+        "OpenTAKServer's plaintext port is 8088, so use e.g. host:8088.",
+    )
+    br.add_argument(
+        "--tak-tls",
+        action="store_true",
+        help="use TLS to the TAK Server (OpenTAKServer/TAK Server SSL streaming port 8089)",
+    )
+    br.add_argument(
+        "--tak-cert",
+        default=None,
+        help="client certificate (PEM) for mutual TLS — its CommonName must be a registered "
+        "OpenTAKServer user to authenticate by cert",
+    )
     br.add_argument("--tak-key", default=None, help="client private key (PEM)")
     br.add_argument("--tak-cacert", default=None, help="CA certificate (PEM) to verify the server")
     br.add_argument("--tak-insecure", action="store_true", help="skip TLS server verification")
