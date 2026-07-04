@@ -128,6 +128,52 @@ async def test_jdss_to_cot_relay_reaches_server():
             await node.stop()
 
 
+async def test_server_inbound_cot_becomes_distinct_peer_with_callsign():
+    """A track a TAK server pushes to us shows up as its own coalition peer (not our node)."""
+    from jdssarrow.config.models import (
+        GatewayConfig,
+        GossipConfig,
+        NetworkConfig,
+        NodeIdentity,
+        PluginSelection,
+    )
+    from jdssarrow.gateway.gateway import JdssGateway
+    from jdssarrow.gateway.node import SoldierNode
+
+    async def handle(reader, writer):
+        writer.write(
+            b'<event version="2.0" uid="TAK-9" type="a-f-G-U-C"><point lat="1" lon="2"/>'
+            b'<detail><contact callsign="OSCAR-9"/></detail></event>'
+        )
+        await writer.drain()
+        while await reader.read(65536):
+            pass
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    cfg = GatewayConfig(
+        identity=NodeIdentity(node_id="web", callsign="WEB"),
+        plugins=PluginSelection(transport="loopback", codec="xml", security="psk"),
+        network=NetworkConfig(network_id="srv-net", repeat=1, psk="k"),
+        gossip=GossipConfig(enabled=False),
+    )
+    node = SoldierNode(JdssGateway(cfg))
+    mgr = ServerConnectionManager()
+    async with srv:
+        await node.start()
+        mgr.attach(node, node.gateway)
+        await mgr.reconcile([_def("ots", port)])
+        await asyncio.sleep(0.4)
+        try:
+            peers = {p["node_id"]: p for p in node.gateway.metrics.peers()}
+            assert any(nid.startswith("tak-ots-") for nid in peers)
+            assert any(p["callsign"] == "OSCAR-9" for p in peers.values())
+            assert "web" not in peers  # not collapsed onto our own identity
+        finally:
+            await mgr.stop()
+            await node.stop()
+
+
 async def test_test_probe_reports_ok_and_failure():
     mock, srv, port = await _server()
     mgr = ServerConnectionManager()
