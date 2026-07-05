@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 from jdssarrow.datamodel import symbology
-from jdssarrow.datamodel.messages import ChatMessage, ContactSighting, Location, Presence
+from jdssarrow.datamodel.messages import (
+    CasevacRequest,
+    ChatMessage,
+    ContactSighting,
+    Identification,
+    JdssMessage,
+    Location,
+    MessageHeader,
+    Overlay,
+    OverlayGraphic,
+    Presence,
+)
 from jdssarrow.datamodel.symbology import StandardIdentity
 from jdssarrow.gateway.gateway import JdssGateway
 from jdssarrow.web.deps import get_gateway
@@ -169,3 +180,84 @@ async def publish_contact(body: ContactIn, gateway: JdssGateway = Depends(get_ga
         )
     )
     return {"message_id": msg.header.message_id}
+
+
+class InjectIn(BaseModel):
+    """A message injected into the gateway *under its own originator* (e.g. an external simulator).
+
+    Unlike /api/publish/* (which sends under this node's identity), an injected message is folded
+    in as if received from that originator, so the gateway fans it out to every connected client —
+    ATAK EUDs, TAK servers, the dashboard and coalition multicast peers."""
+
+    originator: str
+    type: str  # Presence | Identification | ContactSighting | CasevacRequest | Chat | Overlay
+    callsign: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    course_deg: float | None = None
+    speed_mps: float | None = None
+    battery_pct: int | None = None
+    identity: int | None = None
+    sidc: str | None = None
+    description: str | None = None
+    strength: int | None = None
+    text: str | None = None
+    recipient: str = "all"
+    unit: str | None = None
+    role: str | None = None
+    nation: str | None = None
+    classification: int | None = None
+    releasable_to: str | None = None
+
+
+def _inject_body(b: InjectIn) -> object:
+    loc = Location(lat=b.lat or 0.0, lon=b.lon or 0.0)
+    if b.type == "Presence":
+        ident = _identity(b.identity, StandardIdentity.FRIEND)
+        return Presence(
+            location=loc, callsign=b.callsign or b.originator, battery_pct=b.battery_pct,
+            course_deg=b.course_deg, speed_mps=b.speed_mps,
+            sidc=_compliant_sidc(b.sidc, ident, "dismounted_infantry"),
+        )
+    if b.type == "ContactSighting":
+        ident = _identity(b.identity, StandardIdentity.HOSTILE)
+        return ContactSighting(
+            location=loc, identity=ident, description=b.description or "contact",
+            strength=b.strength, course_deg=b.course_deg, speed_mps=b.speed_mps,
+            sidc=_compliant_sidc(b.sidc, ident, "hostile_contact"),
+        )
+    if b.type == "Identification":
+        return Identification(
+            callsign=b.callsign or b.originator, unit=b.unit or b.callsign or b.originator,
+            role=b.role or "rifleman", nation=b.nation or "XXX",
+        )
+    if b.type == "CasevacRequest":
+        return CasevacRequest(location=loc, patients_urgent=b.strength or 1)
+    if b.type == "Chat":
+        return ChatMessage(text=b.text or "—", recipient=b.recipient)
+    if b.type == "Overlay":
+        return Overlay(
+            name=b.description or "overlay",
+            graphics=[OverlayGraphic(
+                sidc=symbology.sidc("control_point"), location=loc, label=b.callsign or "OBJ"
+            )],
+        )
+    raise HTTPException(status_code=400, detail=f"unknown message type '{b.type}'")
+
+
+@router.post("/api/inject")
+async def inject(body: InjectIn, gateway: JdssGateway = Depends(get_gateway)) -> dict:
+    """Inject a message into the gateway under ``originator`` and fan it out to every client."""
+    cfg = gateway.config
+    header = MessageHeader(
+        originator_id=body.originator,
+        network_id=cfg.network.network_id,
+        classification=body.classification
+        if body.classification is not None
+        else cfg.classification.level,
+        releasable_to=body.releasable_to or cfg.classification.releasable_to,
+    )
+    message = JdssMessage(header=header, body=_inject_body(body))  # type: ignore[arg-type]
+    await gateway.ingest_from_bridge(message)
+    return {"ok": True, "type": body.type, "originator": body.originator,
+            "message_id": message.header.message_id}

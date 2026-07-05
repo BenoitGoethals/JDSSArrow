@@ -117,6 +117,13 @@ class MainWindow(QMainWindow):
             self.scenario.addItem(sc.name, key)
         self.scenario.currentIndexChanged.connect(self._scenario_changed)
 
+        self.mode = QComboBox()
+        self.mode.addItem("Inject into gateway (HTTP) — gateway fans out to clients", "inject")
+        self.mode.addItem("Coalition multicast (UDP) — join as peers", "multicast")
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self.gateway_url = QLineEdit("http://localhost:8000")
+        self.gateway_url.setToolTip("The JDSS web gateway to inject into (dashboard runs here)")
+
         self.secure = QCheckBox("Secure — PSK / HMAC-SHA256 (uncheck for non-secure/null)")
         self.secure.setChecked(True)
 
@@ -158,13 +165,23 @@ class MainWindow(QMainWindow):
         buttons.addStretch(1)
 
         form.addRow("Scenario", self.scenario)
+        form.addRow("Mode", self.mode)
+        form.addRow("Gateway URL", self.gateway_url)
         form.addRow("Security", self.secure)
         form.addRow("Transport / codec / class / rate", _wrap(row1))
         form.addRow("Network id", self.network_id)
         form.addRow("Coalition PSK", self.psk)
         form.addRow("", _wrap(buttons))
         self._scenario_changed()
+        self._mode_changed()
         return box
+
+    def _mode_changed(self) -> None:
+        inject = self.mode.currentData() == "inject"
+        # inject mode goes over HTTP to the gateway; the multicast fields don't apply
+        self.gateway_url.setEnabled(inject)
+        for w in (self.secure, self.transport, self.network_id, self.psk):
+            w.setEnabled(not inject)
 
     def _unit_table(self) -> QWidget:
         box = QGroupBox("Units")
@@ -205,6 +222,8 @@ class MainWindow(QMainWindow):
         self._worker = SimWorker(
             self.scenario.currentData(),
             interval=self.interval.value(),
+            mode=self.mode.currentData(),
+            gateway_url=self.gateway_url.text().strip() or "http://localhost:8000",
             secure=self.secure.isChecked(),
             transport=self.transport.currentText(),
             codec=self.codec.currentText(),
@@ -228,11 +247,12 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._set_inputs(True)
+        self._mode_changed()  # re-apply mode-dependent enabling
         self._worker = None
 
     def _set_inputs(self, on: bool) -> None:
-        for w in (self.scenario, self.secure, self.transport, self.codec,
-                  self.network_id, self.psk, self.classification, self.interval):
+        for w in (self.scenario, self.mode, self.gateway_url, self.secure, self.transport,
+                  self.codec, self.network_id, self.psk, self.classification, self.interval):
             w.setEnabled(on)
 
     # ------------------------------------------------------------------ events

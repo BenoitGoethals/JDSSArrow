@@ -23,6 +23,7 @@ async def test_scenario_runs_secure_and_nonsecure(key, secure):
     events: list[dict] = []
     eng = SimulatorEngine(
         SCENARIOS[key],
+        mode="multicast",
         secure=secure,
         transport="loopback",
         network_id=f"sim-{key}-{int(secure)}",
@@ -49,6 +50,48 @@ async def test_scenario_runs_secure_and_nonsecure(key, secure):
     assert eng.units == []  # cleaned up on stop
 
 
+def test_inject_payload_maps_bodies():
+    from simulator.engine import LiveUnit
+
+    from jdssarrow.datamodel import symbology
+    from jdssarrow.datamodel.messages import ChatMessage, ContactSighting, Location, Presence
+
+    eng = SimulatorEngine(SCENARIOS["narvik"], mode="inject", on_event=lambda e: None)
+    spec = SCENARIOS["narvik"].units[0]
+    u = LiveUnit(spec=spec, gateway=None, lat=1.0, lon=2.0, idx=0)
+
+    p = eng._inject_payload(u, Presence(location=Location(lat=1, lon=2), callsign="X",
+                                        course_deg=90, speed_mps=3))
+    assert p["type"] == "Presence" and p["originator"] == spec.node_id
+    assert p["lat"] == 1 and p["course_deg"] == 90
+    c = eng._inject_payload(u, ContactSighting(location=Location(lat=1, lon=2),
+                                               identity=symbology.StandardIdentity.HOSTILE,
+                                               description="tgt"))
+    assert c["type"] == "ContactSighting" and c["identity"] == 6 and c["description"] == "tgt"
+    ch = eng._inject_payload(u, ChatMessage(text="hi"))
+    assert ch["type"] == "Chat" and ch["text"] == "hi"
+
+
+def test_inject_endpoint_fans_out_as_distinct_peer_counted_once():
+    """POST /api/inject makes the injector a distinct coalition peer, counted once (as received)."""
+    from fastapi.testclient import TestClient
+
+    from jdssarrow.web.app import create_app
+
+    with TestClient(create_app()) as c:
+        r = c.post("/api/inject", json={
+            "originator": "u1", "type": "Presence", "callsign": "UNIT-1",
+            "lat": 50.8, "lon": 4.3, "course_deg": 90, "speed_mps": 2,
+        })
+        assert r.status_code == 200 and r.json()["originator"] == "u1"
+        peers = {p["node_id"]: p for p in c.get("/api/monitor/peers").json()}
+        assert "u1" in peers and peers["u1"]["callsign"] == "UNIT-1"
+        # exactly one Presence (the injected one), i.e. not double-counted as sent+received
+        assert c.get("/api/monitor/snapshot").json()["counts_by_type"].get("Presence") == 1
+        assert c.get("/api/logs/messages").json()["counts"]["in"] >= 1  # recorded as received
+        assert c.post("/api/inject", json={"originator": "u1", "type": "Nope"}).status_code == 400
+
+
 async def test_engine_receives_external_gateway_traffic():
     """A unit's inbound handler surfaces traffic from a separate node on the same network."""
     from jdssarrow.config.models import (
@@ -64,7 +107,7 @@ async def test_engine_receives_external_gateway_traffic():
     net = "sim-rx-net"
     events: list[dict] = []
     eng = SimulatorEngine(
-        SCENARIOS["narvik"], secure=True, transport="loopback",
+        SCENARIOS["narvik"], mode="multicast", secure=True, transport="loopback",
         network_id=net, on_event=events.append, seed=1,
     )
     await eng.start()

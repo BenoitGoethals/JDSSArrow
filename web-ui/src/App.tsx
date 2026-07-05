@@ -849,6 +849,12 @@ function CotTrafficModal({
         <b>▼ in</b> = CoT→JDSS received. {log ? `${log.counts.out ?? 0} out · ${log.counts.in ?? 0} in` : ""}.
         Click a row for the raw CoT.
       </p>
+      <p className="hint">
+        Note: under a containerized deploy the <b>peer</b> shows the Docker bridge/host address
+        (e.g. <code>172.18.0.1</code>), not the client's real IP — Docker NATs published-port
+        connections. Run the gateway natively (or <code>--network host</code>) to see real client
+        IPs. Identify the device by its CoT uid / callsign.
+      </p>
       <div className="cotlog">
         <div className="cotlog-head">
           <span></span>

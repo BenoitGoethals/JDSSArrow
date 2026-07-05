@@ -292,9 +292,9 @@ class JdssGateway:
         Broadcasts it to the coalition **and** folds it into this node's own picture and local
         relays (so a bridged EUD/server shows up in this node's peers/matrix and is fanned out to
         the other bridges). Unlike :meth:`publish`, the originator is preserved as-is (not this
-        node's identity), so each bridged source is a distinct coalition peer."""
-        await self.engine.publish(message)
-        await self.engine.deliver_local(message)
+        node's identity), so each bridged source is a distinct coalition peer. Counted once (as
+        received), not double-counted as sent+received."""
+        await self.engine.relay_from_bridge(message)
 
     # ------------------------------------------------------------ capabilities
     def capabilities_snapshot(self) -> dict:

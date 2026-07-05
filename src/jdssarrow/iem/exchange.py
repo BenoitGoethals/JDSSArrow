@@ -152,9 +152,9 @@ class ExchangeEngine:
         await self._transport.stop()
 
     # ------------------------------------------------------------------ publish
-    async def publish(self, message: JdssMessage) -> JdssMessage:
-        """Stamp, encode, protect and transmit a message (with repetition)."""
-        message.header.originator_id = message.header.originator_id or self._node_id
+    async def _transmit(self, message: JdssMessage) -> None:
+        """Encode, protect and put a message on the wire (with repetition); remember its id so our
+        own multicast loopback is deduped."""
         self._seq += 1
         message.header.sequence = self._seq
         payload = self._codec.encode(message)
@@ -162,21 +162,28 @@ class ExchangeEngine:
         frame = Frame(self._codec.name, self._security.name, wire).to_bytes()
         for _ in range(self._repeat):
             await self._transport.send(frame)
+        self._remember(message)
+
+    async def publish(self, message: JdssMessage) -> JdssMessage:
+        """Stamp, transmit and account a message this node originates."""
+        message.header.originator_id = message.header.originator_id or self._node_id
+        await self._transmit(message)
         self._metrics.record_sent(message)
-        self._remember(message)  # so our own repeats/echoes are ignored on receive
         return message
 
     async def deliver_local(self, message: JdssMessage) -> None:
-        """Fold a locally-sourced message (from a CoT/ATAK bridge) into this node's own picture and
-        handlers, exactly as if it had arrived from the network.
-
-        The bridge also :meth:`publish`es it to the coalition; ``publish`` remembers the id, so the
-        multicast loopback of that frame is deduped and the message is not processed twice. This is
-        what makes bridged EUDs/servers show up in *this* node's peers, matrix and relays (the
-        loopback alone can't, because a node dedups its own transmissions)."""
+        """Fold a message into this node's own picture and handlers, as if received from the net."""
         self._metrics.node_seen(message.header.originator_id)
         self._metrics.record_received(message)
         await self._dispatch(message)
+
+    async def relay_from_bridge(self, message: JdssMessage) -> None:
+        """Inject an externally-originated message (from a CoT/ATAK bridge or an injector): transmit
+        it to the coalition *and* fold it into this node's picture/relays — counted **once** (as
+        received), since it isn't this node's own outgoing traffic. The transmit remembers the id,
+        so the multicast loopback is deduped and it isn't processed twice."""
+        await self._transmit(message)
+        await self.deliver_local(message)
 
     async def publish_control(self, kind: str, data: dict) -> None:
         """Broadcast an out-of-band, HMAC-protected control message (not a JDSSDM message).

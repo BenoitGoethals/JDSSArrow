@@ -22,19 +22,22 @@ uv pip install PyQt6            # the app's only extra dependency
 python -m simulator            # from the repo root
 ```
 
-In the app: pick a **Scenario**, tick/untick **Secure**, choose **Transport** (`udp` to join a real
-gateway's multicast network, `loopback` for an isolated demo), set the **Network id** and **PSK** to
-match the gateway, then **Start**. The unit table shows live positions; the two log tabs show
-outgoing and incoming CoT/JDSS traffic.
+In the app: pick a **Scenario** and **Mode**, then **Start**. The unit table shows live positions;
+the log tabs show the traffic.
 
-### Connecting to the running gateway
+### Modes
 
-Start the JDSS web app/gateway, then point the simulator at the **same** `network_id`, `psk`,
-`codec`, and security mode (secure↔`psk`, non‑secure↔`null`) over `udp`. The simulated units then
-appear in the gateway's dashboard (Peers, Live Feed, Connection Matrix) with their APP‑6(D) symbols.
+- **Inject into gateway (HTTP)** — *default, recommended.* The simulator **injects** each message
+  into the running gateway via `POST /api/inject`, and the **gateway fans it out** to all of its
+  connected clients — ATAK EUDs, TAK servers (OpenTAKServer), the dashboard, and coalition multicast
+  peers. Set only the **Gateway URL** (default `http://localhost:8000`). This is the correct model
+  ("clients receive because the gateway relays"), and it **works through Docker/NAT** (plain HTTP),
+  unlike UDP multicast. Each unit shows up as its own coalition peer with its APP‑6(D) symbol.
 
-- **Secure**: simulator *Secure* checked ↔ gateway `security: psk` (same PSK).
-- **Non‑secure**: simulator *Secure* unchecked ↔ gateway `security: null`.
+- **Coalition multicast (UDP)** — the simulator joins the coalition network directly as peer nodes.
+  Match the gateway's `network_id`, `psk`, `codec` and security mode (secure↔`psk`,
+  non‑secure↔`null`). Note: UDP multicast **does not cross a Docker bridge network**, so this mode
+  needs the gateway running natively on the same host/LAN.
 
 ## Architecture
 

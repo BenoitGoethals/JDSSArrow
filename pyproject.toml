@@ -31,6 +31,7 @@ dev = [
 # don't need it; install with `uv pip install -e ".[sim]"` to run `python -m simulator`.
 sim = [
     "PyQt6>=6.6",
+    "httpx>=0.27",  # inject mode POSTs to the gateway's /api/inject
 ]
 
 [project.scripts]

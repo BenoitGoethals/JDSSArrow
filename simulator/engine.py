@@ -49,7 +49,7 @@ Event = dict
 @dataclass
 class LiveUnit:
     spec: UnitSpec
-    gateway: JdssGateway
+    gateway: JdssGateway | None  # None in inject mode (no local node)
     lat: float
     lon: float
     wp: int = 1  # index of the waypoint we're heading toward
@@ -71,6 +71,8 @@ class SimulatorEngine:
         network_id: str | None = None,
         psk: str = "jdss-coalition-key",
         classification: int = 1,
+        mode: str = "inject",  # "inject" (HTTP → gateway) or "multicast" (join as UDP peers)
+        gateway_url: str = "http://localhost:8000",
         on_event: Callable[[Event], None] | None = None,
         seed: int = 1337,
     ) -> None:
@@ -81,6 +83,9 @@ class SimulatorEngine:
         self.network_id = network_id or scenario.network_id
         self.psk = psk
         self.classification = classification
+        self.mode = mode
+        self.gateway_url = gateway_url.rstrip("/")
+        self._http = None
         self._on_event = on_event or (lambda e: None)
         self._rng = random.Random(seed)
         self.units: list[LiveUnit] = []
@@ -113,13 +118,11 @@ class SimulatorEngine:
         )
 
     async def start(self) -> None:
-        for idx, spec in enumerate(self.scenario.units):
-            gateway = JdssGateway(self._config(spec))
-            gateway.add_handler(_RxHandler(self))
-            await gateway.start()
-            lat, lon = spec.route[0]
-            self.units.append(LiveUnit(spec=spec, gateway=gateway, lat=lat, lon=lon, idx=idx))
-        for u in self.units:  # announce identity once
+        if self.mode == "inject":
+            await self._start_inject()
+        else:
+            await self._start_multicast()
+        for u in self.units:  # announce identity + objective once
             await self._publish(
                 u,
                 Identification(
@@ -132,18 +135,49 @@ class SimulatorEngine:
             )
             if "overlay" in u.spec.behaviors:
                 await self._emit_objective(u)
+
+    async def _start_multicast(self) -> None:
+        for idx, spec in enumerate(self.scenario.units):
+            gateway = JdssGateway(self._config(spec))
+            gateway.add_handler(_RxHandler(self))
+            await gateway.start()
+            lat, lon = spec.route[0]
+            self.units.append(LiveUnit(spec=spec, gateway=gateway, lat=lat, lon=lon, idx=idx))
         mode = "secure (PSK / HMAC-SHA256)" if self.secure else "NON-secure (null)"
         self._status(
-            f"{len(self.units)} units joined '{self.network_id}' — {mode}, "
+            f"{len(self.units)} units joined multicast '{self.network_id}' — {mode}, "
             f"{self.codec}/{self.transport}"
         )
 
+    async def _start_inject(self) -> None:
+        import httpx
+
+        self._http = httpx.AsyncClient(timeout=5.0)
+        for idx, spec in enumerate(self.scenario.units):
+            lat, lon = spec.route[0]
+            self.units.append(LiveUnit(spec=spec, gateway=None, lat=lat, lon=lon, idx=idx))
+        try:
+            r = await self._http.get(f"{self.gateway_url}/api/health")
+            r.raise_for_status()
+            node = r.json().get("node_id", "?")
+            self._status(
+                f"injecting {len(self.units)} units into gateway {self.gateway_url} "
+                f"(node '{node}') — the gateway fans out to ATAK / TAK servers / dashboard"
+            )
+        except Exception as exc:
+            self._status(f"WARNING: cannot reach gateway {self.gateway_url}/api/health — {exc}")
+
     async def stop(self) -> None:
         for u in self.units:
+            if u.gateway is not None:
+                with contextlib.suppress(Exception):
+                    await u.gateway.stop()
+        if self._http is not None:
             with contextlib.suppress(Exception):
-                await u.gateway.stop()
+                await self._http.aclose()
+            self._http = None
         self.units = []
-        self._status("stopped — units left the network")
+        self._status("stopped")
 
     # ------------------------------------------------------------------ per-tick
     async def tick(self, dt: float, tick_no: int) -> None:
@@ -254,9 +288,15 @@ class SimulatorEngine:
     # ------------------------------------------------------------------ publish/receive
     async def _publish(self, u: LiveUnit, body: object, detail: str) -> None:
         try:
-            await u.gateway.publish(body)
-        except Exception as exc:  # capability/emit errors shouldn't kill the loop
-            self._status(f"{u.spec.callsign}: publish failed — {exc}")
+            if self.mode == "inject":
+                resp = await self._http.post(  # type: ignore[union-attr]
+                    f"{self.gateway_url}/api/inject", json=self._inject_payload(u, body)
+                )
+                resp.raise_for_status()
+            else:
+                await u.gateway.publish(body)  # type: ignore[union-attr]
+        except Exception as exc:  # a failed send shouldn't kill the loop
+            self._status(f"{u.spec.callsign}: send failed — {exc}")
             return
         u.sent += 1
         self.sent += 1
@@ -273,6 +313,32 @@ class SimulatorEngine:
                 "ts": time.time(),
             }
         )
+
+    def _inject_payload(self, u: LiveUnit, body: object) -> dict:
+        """Flatten a JDSS body into the /api/inject schema."""
+        p: dict = {
+            "originator": u.spec.node_id,
+            "type": str(getattr(body, "type", "?")),
+            "callsign": u.spec.callsign,
+            "classification": self.classification,
+        }
+        loc = getattr(body, "location", None)
+        if loc is not None:
+            p["lat"], p["lon"] = loc.lat, loc.lon
+        for f in ("course_deg", "speed_mps", "battery_pct", "description",
+                  "strength", "text", "unit", "role", "nation", "sidc"):
+            v = getattr(body, f, None)
+            if v is not None:
+                p[f] = v
+        ident = getattr(body, "identity", None)
+        if ident is not None:
+            p["identity"] = int(ident)
+        graphics = getattr(body, "graphics", None)  # Overlay: use its first graphic's point
+        if graphics:
+            g = graphics[0]
+            p["lat"], p["lon"] = g.location.lat, g.location.lon
+            p["description"] = getattr(body, "name", "overlay")
+        return p
 
     def _note_received(self, message: JdssMessage) -> None:
         h = message.header
