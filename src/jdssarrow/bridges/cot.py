@@ -208,9 +208,9 @@ def message_to_cot(message: JdssMessage, stale_s: int = 300) -> bytes | None:
             "uid": uid,
             "type": cot_type,
             "how": "m-g",
-            "time": t.isoformat(),
-            "start": t.isoformat(),
-            "stale": stale.isoformat(),
+            "time": _cot_time(t),
+            "start": _cot_time(t),
+            "stale": _cot_time(stale),
         },
     )
     ET.SubElement(
@@ -255,10 +255,18 @@ def cot_is_stale(raw: bytes, now: datetime | None = None) -> bool:
     return dt < (now or datetime.now(UTC))
 
 
+def _cot_time(dt: datetime) -> str:
+    """CoT/TAK Zulu timestamp, e.g. ``2026-07-05T12:38:32.348Z``.
+
+    ATAK/WinTAK require this exact shape (UTC, milliseconds, trailing ``Z``); a Python ``+00:00``
+    offset or 6-digit microseconds makes ATAK silently drop the event instead of rendering it."""
+    return dt.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def cot_delete(uid: str, now: datetime | None = None) -> bytes:
     """Build a CoT delete event (``t-x-d-d``) instructing clients to drop track ``uid``."""
     now = now or datetime.now(UTC)
-    iso = now.isoformat()
+    iso = _cot_time(now)
     ev = ET.Element(
         "event",
         {"version": "2.0", "uid": f"{uid}.del", "type": "t-x-d-d", "how": "m-g",
