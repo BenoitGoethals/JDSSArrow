@@ -1928,19 +1928,26 @@ function MatrixPanel() {
   const [matrix, setMatrix] = useState<ConnMatrix | null>(null);
   const [mode, setMode] = useState<"live" | "probe">("live");
   const [cell, setCell] = useState<{ obs: string; from: string } | null>(null);
-  const load = (m: "live" | "probe") =>
+  const [hideInactive, setHideInactive] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback((m: "live" | "probe") => {
+    setRefreshing(true);
     (m === "live" ? api.matrix() : api.matrixProbe("garbage"))
       .then(setMatrix)
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => setRefreshing(false));
+  }, []);
   useEffect(() => {
     load(mode);
     if (mode === "live") {
       const t = setInterval(() => load("live"), 2500);
       return () => clearInterval(t);
     }
-  }, [mode]);
+  }, [mode, load]);
 
-  const short = (n: string) => n.replace(/-1$/, "").slice(0, 8);
+  const short = (n: string) => n.replace(/^atak-/, "").replace(/-1$/, "").slice(0, 10);
   // coalition block applies to EVERY row (network-wide); local block only to the local row
   const coalitionBlocks = (from: string): boolean => {
     const c = matrix?.coalition;
@@ -1957,72 +1964,132 @@ function MatrixPanel() {
     matrix?.coalition?.pairs?.[obs]?.includes(from) ?? false;
   const isBlocked = (obs: string, from: string): boolean =>
     coalitionBlocks(from) || localBlocks(obs, from) || pairBlocks(obs, from);
+
+  const nodes = matrix?.nodes ?? [];
+  const val = (o: string, f: string) => matrix?.rows[o]?.[f] ?? 0;
+  // a node is "active" if it accepted from anyone or anyone accepted from it (or it's special)
+  const active = (n: string) =>
+    n === matrix?.policy?.node_id ||
+    n === matrix?.rogue_node ||
+    nodes.some((m) => m !== n && (val(n, m) > 0 || val(m, n) > 0));
+  const visible = nodes.filter(
+    (n) =>
+      (!filter || n.toLowerCase().includes(filter.toLowerCase())) &&
+      (!hideInactive || active(n))
+  );
+  const rowMax = (o: string) => Math.max(1, ...visible.filter((f) => f !== o).map((f) => val(o, f)));
+  const totalAccepted = visible.reduce(
+    (a, o) => a + visible.reduce((b, f) => b + (o === f ? 0 : val(o, f)), 0),
+    0
+  );
+
   const cellStyle = (obs: string, from: string, v: number): CSSProperties => {
-    if (obs === from) return { color: "var(--muted)" };
     if (isBlocked(obs, from)) return { color: "#c0392b", fontWeight: 700 };
     if (from === matrix?.rogue_node) return { color: "#c0392b", opacity: v ? 1 : 0.5 };
-    return { color: v ? "var(--text)" : "var(--muted)", opacity: v ? 1 : 0.35 };
+    if (v > 0) {
+      const a = 0.12 + 0.5 * Math.min(1, v / rowMax(obs));
+      return { color: "var(--text)", background: `rgba(74,156,109,${a.toFixed(2)})` };
+    }
+    return { color: "var(--muted)" };
   };
 
   return (
     <section className="card matrix">
-      <h2>Connection Matrix — who accepts whom</h2>
-      <label className="rogue-toggle">
-        <input
-          type="radio"
-          checked={mode === "live"}
-          onChange={() => setMode("live")}
-        />
-        live (peer-digest gossip)
-      </label>{" "}
-      <label className="rogue-toggle">
-        <input
-          type="radio"
-          checked={mode === "probe"}
-          onChange={() => setMode("probe")}
-        />
-        probe + rogue (simulated)
-      </label>{" "}
-      <button onClick={() => load(mode)}>Refresh</button>
+      <div className="matrix-head">
+        <h2>Connection Matrix — who accepts whom</h2>
+        <div className="matrix-controls">
+          <div className="segmented">
+            <button className={mode === "live" ? "seg active" : "seg"} onClick={() => setMode("live")}>
+              Live · peer-gossip
+            </button>
+            <button
+              className={mode === "probe" ? "seg active" : "seg"}
+              onClick={() => setMode("probe")}
+            >
+              Probe + rogue
+            </button>
+          </div>
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={hideInactive}
+              onChange={(e) => setHideInactive(e.target.checked)}
+            />{" "}
+            hide inactive
+          </label>
+          <input
+            className="matrix-filter"
+            placeholder="filter nodes…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <button onClick={() => load(mode)}>Refresh</button>
+          {mode === "live" && (
+            <span className={`live-dot ${refreshing ? "pulse" : ""}`} title="live · auto-refresh" />
+          )}
+        </div>
+      </div>
+
       {!matrix ? (
         <p className="hint">probing…</p>
       ) : (
-        <table className="matrixgrid">
-          <thead>
-            <tr>
-              <th>obs ← from</th>
-              {matrix.nodes.map((n) => (
-                <th key={n} className={n === matrix.rogue_node ? "rogue" : ""}>
-                  {short(n)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.nodes.map((obs) => (
-              <tr key={obs}>
-                <td className={`rowhead ${obs === matrix.rogue_node ? "rogue" : ""}`}>
-                  {short(obs)}
-                </td>
-                {matrix.nodes.map((from) => {
-                  const v = matrix.rows[obs]?.[from] ?? 0;
-                  const self = obs === from;
-                  return (
-                    <td
-                      key={from}
-                      style={cellStyle(obs, from, v)}
-                      className={self ? "" : "cell-click"}
-                      title={self ? "" : `${obs} ← ${from}: click for details`}
-                      onClick={self ? undefined : () => setCell({ obs, from })}
-                    >
-                      {self ? "–" : isBlocked(obs, from) ? "✗" : v}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <p className="hint matrix-summary">
+            showing <b>{visible.length}</b> of {nodes.length} nodes · {totalAccepted} accepted
+            <span className="lg self">– self</span>
+            <span className="lg ok">■ accepting</span>
+            <span className="lg blk">✗ blocked</span>
+            {matrix.rogue_node && <span className="lg rogue">● rogue</span>}
+          </p>
+          {visible.length === 0 ? (
+            <p className="hint">no nodes match the filter.</p>
+          ) : (
+            <div className="matrix-scroll">
+              <table className="matrixgrid">
+                <thead>
+                  <tr>
+                    <th className="corner">obs ← from</th>
+                    {visible.map((n) => (
+                      <th key={n} title={n} className={n === matrix.rogue_node ? "rogue" : ""}>
+                        {short(n)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((obs) => (
+                    <tr key={obs}>
+                      <td
+                        className={`rowhead ${obs === matrix.rogue_node ? "rogue" : ""}`}
+                        title={obs}
+                      >
+                        {short(obs)}
+                      </td>
+                      {visible.map((from) => {
+                        const v = val(obs, from);
+                        const self = obs === from;
+                        const blocked = !self && isBlocked(obs, from);
+                        return (
+                          <td
+                            key={from}
+                            style={self ? { color: "var(--muted)" } : cellStyle(obs, from, v)}
+                            className={self ? "self" : "cell-click"}
+                            title={
+                              self ? "" : `${obs} ← ${from}: ${blocked ? "blocked" : v + " accepted"} — click`
+                            }
+                            onClick={self ? undefined : () => setCell({ obs, from })}
+                          >
+                            {self ? "–" : blocked ? "✗" : v || ""}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
       <p className="hint">
         Cell = messages the row node accepted from the column node. Click a cell to inspect it and

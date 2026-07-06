@@ -113,14 +113,39 @@ section.card:has(.applog) { grid-column: 1 / -1; }
 .sim-controls { display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap; margin: .6rem 0; color: var(--muted); font-size: .85rem; }
 .sim-controls input[type="number"] { width: 5rem; }
 .matrix { grid-column: 1 / -1; }
-.rogue-toggle { font-size: .82rem; color: var(--muted); }
-.matrixgrid { width: auto; border-collapse: collapse; margin-top: .6rem; font-family: ui-monospace, monospace; font-size: .78rem; }
-.matrixgrid th, .matrixgrid td { padding: .22rem .5rem; text-align: right; border-bottom: 1px solid #222c37; }
-.matrixgrid thead th { color: var(--muted); border-bottom: 1px solid var(--line); font-weight: 600; }
-.matrixgrid td.rowhead, .matrixgrid th:first-child { text-align: left; color: var(--muted); }
+.matrix-head { display: flex; justify-content: space-between; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.matrix-head h2 { margin: 0; }
+.matrix-controls { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+.matrix-controls .inline { display: flex; align-items: center; gap: .3rem; color: var(--muted); font-size: .8rem; }
+.matrix-controls .inline input { width: auto; }
+.matrix-controls button { margin-top: 0; }
+.matrix-filter { width: 9rem; }
+/* segmented mode toggle */
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.segmented .seg { background: transparent; color: var(--muted); border: 0; border-radius: 0; margin: 0; padding: .35rem .7rem; font-size: .8rem; font-weight: 600; cursor: pointer; }
+.segmented .seg:hover { color: var(--text); }
+.segmented .seg.active { background: var(--accent); color: #06110b; }
+.live-dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); display: inline-block; }
+.live-dot.pulse { animation: matrixpulse 1s ease-in-out infinite; }
+@keyframes matrixpulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+/* summary + legend */
+.matrix-summary { margin: .5rem 0 0; }
+.matrix-summary .lg { margin-left: .8rem; font-size: .72rem; }
+.matrix-summary .lg.self { color: var(--muted); }
+.matrix-summary .lg.ok { color: var(--accent); }
+.matrix-summary .lg.blk, .matrix-summary .lg.rogue { color: #c0392b; }
+/* scrollable grid with sticky header + first column */
+.matrix-scroll { max-height: 62vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: .5rem; }
+.matrixgrid { width: auto; border-collapse: separate; border-spacing: 0; font-family: ui-monospace, monospace; font-size: .78rem; }
+.matrixgrid th, .matrixgrid td { padding: .22rem .5rem; text-align: right; border-bottom: 1px solid #222c37; border-right: 1px solid #1c242e; }
+.matrixgrid thead th { position: sticky; top: 0; z-index: 2; background: var(--card); color: var(--muted); font-weight: 600; min-width: 3rem; max-width: 5.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.matrixgrid td.rowhead, .matrixgrid th.corner { position: sticky; left: 0; text-align: left; color: var(--muted); background: var(--card); white-space: nowrap; }
+.matrixgrid td.rowhead { z-index: 1; }
+.matrixgrid th.corner { z-index: 3; }
+.matrixgrid td.self { text-align: center; color: var(--muted); }
 .matrixgrid .rogue { color: #c0392b; font-weight: 700; }
 .matrixgrid td.cell-click { cursor: pointer; }
-.matrixgrid td.cell-click:hover { background: #26313d; outline: 1px solid var(--accent); }
+.matrixgrid td.cell-click:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
 .feed li.clickable { cursor: pointer; }
 .feed li.clickable:hover { background: #1e2732; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; z-index: 50; }
