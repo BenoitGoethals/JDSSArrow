@@ -35,6 +35,7 @@ class SimulationManager:
         transport: str,
         codec: str,
         psk: str,
+        security: str = "psk",
         interval: float = 1.0,
         rogue: str | None = None,
     ) -> dict:
@@ -46,6 +47,7 @@ class SimulationManager:
             transport=transport,
             codec=codec,
             psk=psk,
+            security=security,
             rogue=rogue,
         )
         self._params = {

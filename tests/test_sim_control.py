@@ -90,3 +90,20 @@ def test_web_sim_isolated_and_rogue(tmp_path):
         assert started["network_id"] == "sim-isolated"
         assert any(c["role"] == "rogue" for c in started["clients"])
         client.post("/api/sim/stop")
+
+
+def test_sim_inherits_gateway_security(monkeypatch):
+    """Sim clients must use the node's security plugin, else frames clash (HMAC/codec errors)."""
+    monkeypatch.setenv("JDSS_PLUGINS__SECURITY", "null")
+    monkeypatch.setenv("JDSS_PLUGINS__TRANSPORT", "loopback")
+    from fastapi.testclient import TestClient
+
+    from jdssarrow.web.app import create_app
+
+    with TestClient(create_app()) as c:
+        assert c.get("/api/config").json()["plugins"]["security"] == "null"
+        assert c.post("/api/sim/start", json={"interval": 0.1}).json()["running"] is True
+        # the simulation joined this node's network with matching (null) security
+        st = c.get("/api/sim").json()
+        assert st["network_id"] == c.get("/api/config").json()["network"]["network_id"]
+        c.post("/api/sim/stop")

@@ -33,17 +33,21 @@ async def sim_start(body: SimStart, request: Request) -> dict:
     manager = request.app.state.sim_manager
     if body.isolated:
         network_id, transport, psk = "sim-isolated", "loopback", "sim-key"
+        security = "psk"  # self-contained on its own network; consistent among the sim clients
     else:
-        # join this node's real network so its dashboard lights up
+        # join this node's real network so its dashboard lights up — MATCH its security stack too,
+        # or the sim clients' frames are rejected (HMAC mismatch / unstripped tag).
         network_id = gateway.config.network.network_id
         transport = body.transport or gateway.config.plugins.transport
         psk = gateway.config.network.psk
+        security = gateway.config.plugins.security
     try:
         return await manager.start(
             network_id=network_id,
             transport=transport,
             codec=gateway.config.plugins.codec,
             psk=psk,
+            security=security,
             interval=body.interval,
             rogue=body.rogue,
         )
