@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from jdssarrow.web.routers import (
+    auth,
     config,
     connect,
     connections,
@@ -19,6 +20,7 @@ from jdssarrow.web.routers import (
 
 
 def register_routers(app: FastAPI) -> None:
+    app.include_router(auth.router)
     app.include_router(config.router)
     app.include_router(plugins.router)
     app.include_router(monitor.router)

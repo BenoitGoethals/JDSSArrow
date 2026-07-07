@@ -20,3 +20,6 @@ tests
 Dockerfile
 .dockerignore
 docker-compose.yml
+
+# runtime credentials — never bake into the image
+jdss-users.json

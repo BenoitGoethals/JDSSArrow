@@ -85,6 +85,8 @@ packages = ["src/jdssarrow"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# make the root-level external `simulator` package importable by its headless test
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100

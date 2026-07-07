@@ -221,13 +221,32 @@ export interface EudStatus {
   lan_ip: string;
 }
 
+/** Signal the app to fall back to the login screen when a session is missing/expired. */
+function onUnauthorized() {
+  window.dispatchEvent(new Event("jdss-unauthorized"));
+}
+
 async function json<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { credentials: "same-origin" });
+  if (res.status === 401) {
+    onUnauthorized();
+    throw new Error(`${url}: 401`);
+  }
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   return res.json() as Promise<T>;
 }
 
+export interface CurrentUser {
+  username: string;
+}
+
 export const api = {
+  // ---- auth ----
+  login: (username: string, password: string) =>
+    jsonBody<CurrentUser>("/api/auth/login", "POST", { username, password }),
+  logout: () => jsonBody<{ ok: boolean }>("/api/auth/logout", "POST"),
+  me: () => json<CurrentUser>("/api/auth/me"),
+
   volumes: () => json<Record<string, string>>("/api/volumes"),
   config: () => json<GatewayConfig>("/api/config"),
   plugins: () => json<Record<string, string[]>>("/api/plugins"),
@@ -327,9 +346,12 @@ export const api = {
 async function jsonBody<T>(url: string, method: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
+    credentials: "same-origin",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+  // Login itself 401s on bad credentials — let the caller surface that, don't bounce to the gate.
+  if (res.status === 401 && !url.startsWith("/api/auth/")) onUnauthorized();
   if (!res.ok) throw new Error(`${method} ${url}: ${res.status} ${await res.text()}`);
   return res.json() as Promise<T>;
 }

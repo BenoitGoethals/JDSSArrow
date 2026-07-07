@@ -1,10 +1,19 @@
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import ms from "milsymbol";
 import {
   api,
   CLASS_LABELS,
   CLASS_SHORT,
   Capabilities,
+  CurrentUser,
   classColor,
   CoalitionPolicy,
   AppLogRecord,
@@ -133,7 +142,92 @@ const DOCS: { file: string; title: string; blurb: string }[] = [
   },
 ];
 
+// Auth gate: check the session on mount, show the login screen until signed in, and fall back to
+// it whenever the API reports the session as missing/expired (via the "jdss-unauthorized" event).
 export function App() {
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    api
+      .me()
+      .then(setUser)
+      .catch(() => setUser(null))
+      .finally(() => setChecking(false));
+    const onUnauth = () => setUser(null);
+    window.addEventListener("jdss-unauthorized", onUnauth);
+    return () => window.removeEventListener("jdss-unauthorized", onUnauth);
+  }, []);
+
+  if (checking) {
+    return <div className="login-screen" />;
+  }
+  if (!user) {
+    return <Login onSuccess={setUser} />;
+  }
+  return (
+    <Dashboard
+      user={user.username}
+      onLogout={() => {
+        api.logout().finally(() => setUser(null));
+      }}
+    />
+  );
+}
+
+function Login({ onSuccess }: { onSuccess: (user: CurrentUser) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      onSuccess(await api.login(username.trim(), password));
+    } catch {
+      setError("Invalid username or password");
+      setPassword("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="login-screen">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">JDSSArrow</div>
+        <div className="login-sub">Coalition gateway · sign in to continue</div>
+        <label className="login-field">
+          <span>Username</span>
+          <input
+            autoFocus
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </label>
+        <label className="login-field">
+          <span>Password</span>
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        {error && <div className="login-error">{error}</div>}
+        <button className="login-submit" disabled={busy || !username || !password}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Dashboard({ user, onLogout }: { user: string; onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [volumes, setVolumes] = useState<Record<string, string>>({});
   const [config, setConfig] = useState<GatewayConfig | null>(null);
@@ -195,6 +289,14 @@ export function App() {
         <span className="subtitle">
           Joint Dismounted Soldier System · STANAG 4677 / AEP-76 · Web Config &amp; Monitor
         </span>
+        <div className="session">
+          <span className="session-user" title="signed-in operator">
+            ⬢ {user}
+          </span>
+          <button className="logout-btn" onClick={onLogout}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       <nav className="tabs">
