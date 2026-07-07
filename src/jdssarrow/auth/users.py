@@ -57,17 +57,34 @@ class UserStore:
 
     # ---- persistence -----------------------------------------------------------------
 
+    def _seed(self) -> dict:
+        data = {
+            "secret": secrets.token_hex(32),
+            "users": {DEFAULT_USER: _make_record(DEFAULT_PASSWORD)},
+        }
+        self._save(data)
+        log.info("seeded credentials file %s with default user %r", self._path, DEFAULT_USER)
+        return data
+
     def _load_or_seed(self) -> dict:
         if not self._path.exists():
-            data = {
-                "secret": secrets.token_hex(32),
-                "users": {DEFAULT_USER: _make_record(DEFAULT_PASSWORD)},
-            }
-            self._save(data)
-            log.info("seeded credentials file %s with default user %r", self._path, DEFAULT_USER)
-            return data
+            return self._seed()
 
-        data = json.loads(self._path.read_text())
+        try:
+            data = json.loads(self._path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("credentials file is not a JSON object")
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
+            # a corrupt / hand-broken file must not take the whole gateway down: back it up and
+            # re-seed the default account rather than crashing at import time.
+            backup = self._path.with_suffix(self._path.suffix + ".corrupt")
+            with contextlib.suppress(OSError):
+                self._path.replace(backup)
+            log.warning(
+                "unreadable credentials file %s (%s); re-seeded, kept backup at %s",
+                self._path, exc, backup,
+            )
+            return self._seed()
         dirty = "secret" not in data  # persist a generated secret so cookies survive restarts
         data.setdefault("secret", secrets.token_hex(32))
         users = data.setdefault("users", {})

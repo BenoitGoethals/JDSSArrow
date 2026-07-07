@@ -68,26 +68,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     from jdssarrow.auth import UserStore
     from jdssarrow.capabilities import CapabilityError
-    from jdssarrow.web.routers.auth import COOKIE_NAME, auth_disabled
 
-    # File-backed login for the dashboard (default user warrior/warrior1401, seeded on first run).
+    # File-backed login for the *dashboard UI* (default user warrior/warrior1401, seeded on first
+    # run). This is deliberately a UI gate only: the React app checks /api/auth/me and shows the
+    # login screen until signed in. The REST API itself stays OPEN — machine clients (the external
+    # simulator's POST /api/inject, health probes, curl) authenticate at the message layer via the
+    # coalition PSK/HMAC, a separate concern from the human web login.
     app.state.user_store = UserStore()
 
     @app.exception_handler(CapabilityError)
     async def _capability_denied(_request, exc: CapabilityError) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    @app.middleware("http")
-    async def _require_login(request, call_next):
-        # Gate every /api/* route behind a valid session cookie, except the auth endpoints
-        # themselves. Static assets (the SPA + docs) and /metrics stay open so the login page
-        # can load and scrapers keep working; the WebSocket is gated in its own handler.
-        path = request.url.path
-        if path.startswith("/api/") and not path.startswith("/api/auth/") and not auth_disabled():
-            token = request.cookies.get(COOKIE_NAME)
-            if not request.app.state.user_store.verify_token(token):
-                return JSONResponse(status_code=401, content={"detail": "authentication required"})
-        return await call_next(request)
 
     register_routers(app)
     _mount_web_ui(app)

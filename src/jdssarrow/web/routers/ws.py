@@ -11,18 +11,12 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from jdssarrow.web.routers.auth import COOKIE_NAME, auth_disabled
-
 router = APIRouter()
 
 
 @router.websocket("/ws/events")
 async def events(ws: WebSocket) -> None:
-    # Same session gate as the REST API — the browser sends the cookie on the WS handshake.
-    if not auth_disabled():
-        if not ws.app.state.user_store.verify_token(ws.cookies.get(COOKIE_NAME)):
-            await ws.close(code=4401)  # 4401 = application "unauthorized"
-            return
+    # Open like the rest of the REST API (the login is a dashboard-UI gate, not an API gate).
     await ws.accept()
     gateway = ws.app.state.gateway
     queue = gateway.metrics.subscribe()

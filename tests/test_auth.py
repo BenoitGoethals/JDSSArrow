@@ -41,6 +41,14 @@ def test_plaintext_password_migrated_in_place(tmp_path):
     assert "secret" in saved  # a signing secret was generated + persisted
 
 
+def test_corrupt_credentials_file_is_reseeded(tmp_path):
+    path = tmp_path / "users.json"
+    path.write_text("t{ this is not json")  # a hand-broken file must not crash the app
+    store = UserStore(path)
+    assert store.verify(DEFAULT_USER, DEFAULT_PASSWORD) is True  # re-seeded with the default
+    assert (tmp_path / "users.json.corrupt").exists()  # the bad file is kept for inspection
+
+
 def _app(tmp_path, monkeypatch):
     from jdssarrow.web.app import create_app
 
@@ -51,10 +59,16 @@ def _app(tmp_path, monkeypatch):
     return create_app(str(cfg))
 
 
-def test_web_login_gate(tmp_path, monkeypatch):
+def test_web_login_is_ui_gate_only(tmp_path, monkeypatch):
+    """The login guards the dashboard (via /api/auth/me), NOT the REST API itself.
+
+    The API stays open so machine clients (the simulator's POST /api/inject, health probes) keep
+    working — they authenticate at the message layer via the coalition PSK, not the web session."""
     with TestClient(_app(tmp_path, monkeypatch)) as client:
-        # a protected endpoint is refused before login
-        assert client.get("/api/health").status_code == 401
+        # the REST API is open with or without a session (machine clients, curl, monitoring)
+        assert client.get("/api/health").status_code == 200
+
+        # ...but whoami reports "not signed in" until you log in (this is what gates the UI)
         assert client.get("/api/auth/me").status_code == 401
 
         # bad credentials are rejected
@@ -69,16 +83,16 @@ def test_web_login_gate(tmp_path, monkeypatch):
         assert r.status_code == 200
         assert r.json()["username"] == DEFAULT_USER
 
-        # now the session cookie unlocks the API + whoami
+        # the session cookie now identifies the operator to the UI
         assert client.get("/api/auth/me").json()["username"] == DEFAULT_USER
-        assert client.get("/api/health").status_code == 200
 
-        # logout clears the session
+        # logout clears the session → back to "not signed in" for the UI
         assert client.post("/api/auth/logout").status_code == 200
-        assert client.get("/api/health").status_code == 401
+        assert client.get("/api/auth/me").status_code == 401
+        assert client.get("/api/health").status_code == 200  # API still open regardless
 
 
-def test_auth_disabled_opens_gate(tmp_path, monkeypatch):
+def test_auth_disabled_reports_default_operator(tmp_path, monkeypatch):
     from jdssarrow.web.app import create_app
 
     monkeypatch.setenv("JDSS_AUTH_DISABLED", "1")
@@ -86,5 +100,6 @@ def test_auth_disabled_opens_gate(tmp_path, monkeypatch):
     cfg = tmp_path / "web.yaml"
     cfg.write_text(yaml.safe_dump({"plugins": {"transport": "loopback", "security": "null"}}))
     with TestClient(create_app(str(cfg))) as client:
-        assert client.get("/api/health").status_code == 200  # no login required
+        # with auth disabled the UI shows no login screen — whoami returns a default operator
         assert client.get("/api/auth/me").json()["username"] == "operator"
+        assert client.get("/api/health").status_code == 200
