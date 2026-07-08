@@ -18,14 +18,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from jdssarrow.datamodel.messages import Location as Loc
 from jdssarrow.datamodel.messages import (
+    ChatRoom,
+    Chatrooms,
+    GeneralInfo,
     MessageType,
     Overlay,
     OverlayGraphic,
+    Receipt,
     Sketch,
     SketchPoint,
 )
+from jdssarrow.datamodel.messages import Location as Loc
 from jdssarrow.datamodel.symbology import StandardIdentity, sidc
 
 if TYPE_CHECKING:
@@ -77,6 +81,7 @@ class TeamLeader(ClientProfile):
         MessageType.CHAT,
         MessageType.CONTACT,
         MessageType.CASEVAC,
+        MessageType.GENINFO,
     )
 
     async def on_tick(self, client: SimClient, tick: int) -> None:
@@ -88,12 +93,22 @@ class TeamLeader(ClientProfile):
             await client.chat("SITREP: consolidating on objective")
         if tick % 6 == 0 and tick:
             await client.contact("dismounted patrol, 300m N", StandardIdentity.HOSTILE)
+        if tick % 5 == 0 and tick:  # structured situation bulletin (GenInfo)
+            lat, lon = client.pos
+            await client.publish(
+                GeneralInfo(
+                    subject="SITREP",
+                    text="objective consolidated, ammunition resupply requested",
+                    location=Loc(lat=lat, lon=lon),
+                ),
+                MessageType.GENINFO,
+            )
 
 
 class Medic(ClientProfile):
     role = "medic"
     device = "eud"
-    emits = (MessageType.PRESENCE, MessageType.CHAT)
+    emits = (MessageType.PRESENCE, MessageType.CHAT, MessageType.RECEIPT)
 
     async def on_tick(self, client: SimClient, tick: int) -> None:
         await client.presence()
@@ -103,6 +118,11 @@ class Medic(ClientProfile):
         if message.type == MessageType.CASEVAC:
             client.stats.casevac_acks += 1
             loc = getattr(message.body, "location", None)
+            # formal Receipt keyed to the CASEVAC's message_id, plus a human-readable chat
+            await client.publish(
+                Receipt(ack_message_id=message.header.message_id, status="received"),
+                MessageType.RECEIPT,
+            )
             await client.chat(
                 f"CASEVAC acknowledged, medic en route to {message.header.originator_id}",
                 recipient=message.header.originator_id,
@@ -201,6 +221,7 @@ class AtakEud(ClientProfile):
         MessageType.CHAT,
         MessageType.CONTACT,
         MessageType.OVERLAY,
+        MessageType.CHATROOMS,
     )
 
     async def on_start(self, client: SimClient) -> None:
@@ -218,6 +239,16 @@ class AtakEud(ClientProfile):
                 ],
             ),
             MessageType.OVERLAY,
+        )
+        # ATAK devices enumerate their GeoChat rooms (Chatrooms)
+        await client.publish(
+            Chatrooms(
+                rooms=[
+                    ChatRoom(room_id="All Chat Rooms", name="All Chat Rooms"),
+                    ChatRoom(room_id="Team", name="Team", members=[client.node_id]),
+                ]
+            ),
+            MessageType.CHATROOMS,
         )
 
     async def on_tick(self, client: SimClient, tick: int) -> None:

@@ -13,6 +13,8 @@ Routes are closed loops, so units patrol them repeatedly while the simulation ru
 
 from __future__ import annotations
 
+import math
+import random
 from dataclasses import dataclass, field
 
 from simulator.geo import Point
@@ -142,3 +144,63 @@ _NARVIK = Scenario(
 )
 
 SCENARIOS: dict[str, Scenario] = {_EBEN.key: _EBEN, _NARVIK.key: _NARVIK}
+
+#: default cohort size for the stress test.
+STRESS_OPERATORS = 500
+
+
+def expand_scenario(scenario: Scenario, count: int, *, seed: int = 4677) -> Scenario:
+    """Clone a scenario up to ``count`` synthetic operators for load/stress testing.
+
+    Operators are scattered across the scenario's area of operations (a ~5 km box around its
+    centre) and each gets its own small closed patrol loop, so 500 tracks move independently.
+    The base units' roles, nations, entities and behaviours are cycled round-robin, so the
+    generated traffic keeps a realistic message mix (presence, contacts, casevac, chat, overlay).
+    """
+    base = scenario.units
+    if not base or count <= len(base):
+        return scenario
+    rng = random.Random(seed)
+    clat, clon = scenario.center
+    # ~0.045° lat ≈ 5 km; widen lon so the box is roughly square at these latitudes
+    span_lat = 0.045
+    span_lon = span_lat / max(0.2, math.cos(math.radians(clat)))
+    units: list[UnitSpec] = []
+    for i in range(count):
+        proto = base[i % len(base)]
+        lat = clat + rng.uniform(-span_lat, span_lat)
+        lon = clon + rng.uniform(-span_lon, span_lon)
+        units.append(
+            UnitSpec(
+                node_id=f"stress-{i + 1:04d}",
+                callsign=f"OP-{i + 1:04d}",
+                nation=proto.nation,
+                role=proto.role,
+                entity=proto.entity,
+                route=_patrol_loop(lat, lon, rng),
+                speed_mps=proto.speed_mps,
+                behaviors=proto.behaviors,
+                unit=f"Stress cohort {i // len(base) + 1}",
+            )
+        )
+    return Scenario(
+        key=f"{scenario.key}__stress{count}",
+        name=f"{scenario.name} — STRESS {count} operators",
+        description=f"Load test: {count} synthetic operators derived from {scenario.name}.",
+        network_id=scenario.network_id,
+        center=scenario.center,
+        units=units,
+        enemies=scenario.enemies,
+        orders=scenario.orders,
+    )
+
+
+def _patrol_loop(lat: float, lon: float, rng: random.Random) -> list[Point]:
+    """A small jittered closed quadrilateral (~200-500 m per leg) around a start point."""
+    d = rng.uniform(0.002, 0.005)
+    return [
+        (lat, lon),
+        (lat + d, lon + d * 0.6),
+        (lat + d * 0.4, lon - d),
+        (lat - d, lon + d * 0.3),
+    ]

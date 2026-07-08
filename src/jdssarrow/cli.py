@@ -223,7 +223,7 @@ async def _simulate(args: argparse.Namespace) -> None:
     if args.matrix:
         print("\nConnection matrix (messages accepted, observer ← originator):")
         print(report.format_matrix())
-    compliant = report.all_seven_types and report.casevac_acks >= report.casevac_requests
+    compliant = report.all_message_types and report.casevac_acks >= report.casevac_requests
     rogue_ok = args.rogue is None or report.rogue_rejected
     print("\nCOMPLIANCE:", "PASS ✓" if compliant and rogue_ok else "CHECK")
 

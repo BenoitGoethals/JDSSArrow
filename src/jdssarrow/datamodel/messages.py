@@ -1,6 +1,6 @@
 """JDSSDM message models (Vol II).
 
-A ``JdssMessage`` is a discriminated union over the seven AEP-76 message types. Each is a
+A ``JdssMessage`` is a discriminated union over the ten AEP-76 JDSSDM message types. Each is a
 pure pydantic model — no serialization or I/O logic lives here; that belongs to the codecs
 (Single Responsibility). Every message carries a common :class:`MessageHeader` so the IEM
 can route, deduplicate and authenticate uniformly regardless of body type.
@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from jdssarrow.datamodel import symbology
 
@@ -37,6 +37,9 @@ class MessageType(StrEnum):
     OVERLAY = "Overlay"
     CASEVAC = "CasevacRequest"
     CHAT = "Chat"
+    GENINFO = "GenInfo"
+    RECEIPT = "Receipt"
+    CHATROOMS = "Chatrooms"
 
 
 class Location(BaseModel):
@@ -179,8 +182,81 @@ class ChatMessage(_Body):
     recipient: str = "all"
 
 
+class GeneralInfo(_Body):
+    """GenInfo — free-form informational message (situation notes, general text broadcasts).
+
+    Carries a short subject line plus free text, and an optional location so a note can be
+    pinned to the map. Where Chat is conversational, GenInfo is a structured info bulletin."""
+
+    type: Literal[MessageType.GENINFO] = MessageType.GENINFO
+    subject: str = ""
+    text: str
+    location: Location | None = None
+
+    @field_validator("subject", "text", mode="before")
+    @classmethod
+    def _coerce_str(cls, v: object) -> object:
+        return "" if v is None else v  # an empty XML element decodes to None
+
+
+class Receipt(_Body):
+    """Receipt — acknowledgement that a specific message was received / read / rejected.
+
+    ``ack_message_id`` references the acknowledged message's :attr:`MessageHeader.message_id`,
+    so a sender can confirm delivery of e.g. a CASEVAC request or an order."""
+
+    type: Literal[MessageType.RECEIPT] = MessageType.RECEIPT
+    ack_message_id: str
+    status: Literal["received", "read", "rejected"] = "received"
+    note: str = ""
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _coerce_note(cls, v: object) -> object:
+        return "" if v is None else v
+
+
+class ChatRoom(BaseModel):
+    """One GeoChat room in a :class:`Chatrooms` enumeration."""
+
+    room_id: str
+    name: str = ""
+    members: list[str] = Field(default_factory=list)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _coerce_name(cls, v: object) -> object:
+        return "" if v is None else v
+
+    @field_validator("members", mode="before")
+    @classmethod
+    def _coerce_members(cls, v: object) -> object:
+        return v or []  # tolerate an empty XML element decoding to None
+
+
+class Chatrooms(_Body):
+    """Chatrooms — enumeration of available GeoChat rooms (and optionally their members)."""
+
+    type: Literal[MessageType.CHATROOMS] = MessageType.CHATROOMS
+    rooms: list[ChatRoom] = Field(default_factory=list)
+
+    @field_validator("rooms", mode="before")
+    @classmethod
+    def _coerce_rooms(cls, v: object) -> object:
+        return v or []  # an empty <rooms/> element decodes to None → treat as no rooms
+
+
 Body = Annotated[
-    Presence | Identification | ContactSighting | Sketch | Overlay | CasevacRequest | ChatMessage,
+    Presence
+    | Identification
+    | ContactSighting
+    | Sketch
+    | Overlay
+    | CasevacRequest
+    | ChatMessage
+    | GeneralInfo
+    | Receipt
+    | Chatrooms,
     Field(discriminator="type"),
 ]
 
@@ -204,6 +280,9 @@ MESSAGE_TYPES: dict[str, type[_Body]] = {
     MessageType.OVERLAY: Overlay,
     MessageType.CASEVAC: CasevacRequest,
     MessageType.CHAT: ChatMessage,
+    MessageType.GENINFO: GeneralInfo,
+    MessageType.RECEIPT: Receipt,
+    MessageType.CHATROOMS: Chatrooms,
 }
 
 

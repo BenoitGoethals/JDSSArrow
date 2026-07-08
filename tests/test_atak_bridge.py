@@ -68,9 +68,26 @@ def test_message_to_cot_types_and_marker():
     chat = message_to_cot(_msg(ChatMessage(text="hi")))
     assert b"b-t-f" in chat
     # Identification has no CoT representation
-    from jdssarrow.datamodel.messages import Identification
+    from jdssarrow.datamodel.messages import (
+        Chatrooms,
+        GeneralInfo,
+        Identification,
+        Receipt,
+    )
+    from jdssarrow.datamodel.messages import (
+        Location as Loc,
+    )
 
     assert message_to_cot(_msg(Identification(callsign="A", unit="U"))) is None
+
+    # GenInfo maps to a GeoChat text event (subject + text, pinned to its location)
+    geninfo = message_to_cot(
+        _msg(GeneralInfo(subject="SITREP", text="all clear", location=Loc(lat=3, lon=4)))
+    )
+    assert b"b-t-f" in geninfo and b"SITREP: all clear" in geninfo and b'lat="3.0"' in geninfo
+    # Receipt (ack) and Chatrooms (room enumeration) have no native CoT event
+    assert message_to_cot(_msg(Receipt(ack_message_id="x"))) is None
+    assert message_to_cot(_msg(Chatrooms())) is None
 
 
 def test_cot_roundtrip_contact():

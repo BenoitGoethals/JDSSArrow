@@ -13,7 +13,9 @@ turns into Qt signals. It has no Qt import, so it runs headless (and under pytes
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import random
 import time
 from collections.abc import Callable, Iterable
@@ -31,19 +33,28 @@ from jdssarrow.datamodel import symbology
 from jdssarrow.datamodel.messages import (
     CasevacRequest,
     ChatMessage,
+    ChatRoom,
+    Chatrooms,
     ContactSighting,
+    GeneralInfo,
     Identification,
     JdssMessage,
     Location,
+    MessageType,
     Overlay,
     OverlayGraphic,
     Presence,
+    Receipt,
 )
 from jdssarrow.gateway.gateway import JdssGateway
 from simulator import geo
-from simulator.scenarios import Scenario, UnitSpec
+from simulator.scenarios import Scenario, UnitSpec, expand_scenario
 
 Event = dict
+
+#: in stress mode, only this many unit rows are streamed to the UI (per-message logs are dropped)
+#: so a 500-operator run doesn't flood the table/log — aggregate throughput is reported instead.
+_STRESS_UI_SAMPLE = 40
 
 
 @dataclass
@@ -75,12 +86,17 @@ class SimulatorEngine:
         gateway_url: str = "http://localhost:8000",
         on_event: Callable[[Event], None] | None = None,
         seed: int = 1337,
+        stress: int = 0,  # >0 → expand the scenario to this many synthetic operators (load test)
+        concurrency: int = 64,  # max in-flight publishes per tick (bounds the stress fan-out)
+        auto_ack: bool = True,  # reply to received coalition traffic with a Receipt (duplex)
     ) -> None:
-        self.scenario = scenario
+        # a stress run clones the scenario up to `stress` operators; otherwise use it as-is
+        self.stress = stress if stress and stress > len(scenario.units) else 0
+        self.scenario = expand_scenario(scenario, stress, seed=seed) if self.stress else scenario
         self.secure = secure
         self.transport = transport
         self.codec = codec
-        self.network_id = network_id or scenario.network_id
+        self.network_id = network_id or self.scenario.network_id
         self.psk = psk
         self.classification = classification
         self.mode = mode
@@ -88,11 +104,18 @@ class SimulatorEngine:
         self._http = None
         self._on_event = on_event or (lambda e: None)
         self._rng = random.Random(seed)
+        self._concurrency = max(1, concurrency)
+        self._sem: asyncio.Semaphore | None = None  # created on the running loop in start()
+        self.auto_ack = auto_ack
         self.units: list[LiveUnit] = []
-        self._own_ids: set[str] = {u.node_id for u in scenario.units}
+        self._own_ids: set[str] = {u.node_id for u in self.scenario.units}
         self._seen: set[str] = set()
+        self._ack_unit: LiveUnit | None = None  # designated originator for auto-ack Receipts
+        self._ws_task: asyncio.Task | None = None  # inject-mode receive stream
+        self._stopping = False
         self.sent = 0
         self.received = 0
+        self.acked = 0
         self.tick_no = 0
 
     # ------------------------------------------------------------------ lifecycle
@@ -118,11 +141,21 @@ class SimulatorEngine:
         )
 
     async def start(self) -> None:
+        self._sem = asyncio.Semaphore(self._concurrency)
+        self._stopping = False
         if self.mode == "inject":
             await self._start_inject()
         else:
             await self._start_multicast()
-        for u in self.units:  # announce identity + objective once
+
+        # designate one originator to answer received coalition traffic with a Receipt: prefer a
+        # command-post-style unit (has "chat"), else the first unit.
+        self._ack_unit = next(
+            (u for u in self.units if "chat" in u.spec.behaviors),
+            self.units[0] if self.units else None,
+        )
+
+        async def _announce(u: LiveUnit) -> None:  # identity + objective + rooms once, concurrently
             await self._publish(
                 u,
                 Identification(
@@ -135,6 +168,10 @@ class SimulatorEngine:
             )
             if "overlay" in u.spec.behaviors:
                 await self._emit_objective(u)
+            if "chat" in u.spec.behaviors:  # command-post units enumerate their GeoChat rooms
+                await self._emit_chatrooms(u)
+
+        await self._run_bounded(_announce(u) for u in self.units)
 
     async def _start_multicast(self) -> None:
         for idx, spec in enumerate(self.scenario.units):
@@ -166,8 +203,18 @@ class SimulatorEngine:
             )
         except Exception as exc:
             self._status(f"WARNING: cannot reach gateway {self.gateway_url}/api/health — {exc}")
+        # bi-directional: subscribe to the gateway's live feed so coalition traffic comes back in
+        # (skipped under stress load, where 500 units' own injects would flood the feed for nothing)
+        if self.auto_ack and not self.stress:
+            self._ws_task = asyncio.create_task(self._ws_listen())
 
     async def stop(self) -> None:
+        self._stopping = True
+        if self._ws_task is not None:
+            self._ws_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._ws_task
+            self._ws_task = None
         for u in self.units:
             if u.gateway is not None:
                 with contextlib.suppress(Exception):
@@ -177,15 +224,93 @@ class SimulatorEngine:
                 await self._http.aclose()
             self._http = None
         self.units = []
+        self._ack_unit = None
         self._status("stopped")
+
+    # ------------------------------------------------------------------ bi-directional receive
+    async def _ws_listen(self) -> None:
+        """Inject mode: read the gateway's live event feed so we *receive* coalition traffic."""
+        import websockets
+
+        base = self.gateway_url.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = base + "/ws/events"
+        while not self._stopping:
+            try:
+                async with websockets.connect(ws_url, max_size=None) as ws:
+                    self._status(f"receiving coalition traffic from {ws_url}")
+                    async for raw in ws:
+                        event = json.loads(raw)
+                        if event.get("direction") in ("sent", "received"):
+                            await self._receive(
+                                event.get("originator_id"),
+                                event.get("message_id"),
+                                event.get("type"),
+                                event.get("callsign"),
+                            )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # a dropped feed shouldn't kill the sim — retry
+                if self._stopping:
+                    return
+                self._status(f"receive feed dropped ({exc}); reconnecting…")
+                await asyncio.sleep(2.0)
+
+    async def _receive(
+        self, origin: str | None, mid: str | None, type_name: str | None, callsign: str | None
+    ) -> None:
+        """Handle one inbound message (from multicast RX or the inject-mode feed)."""
+        if not origin or origin in self._own_ids or (mid and mid in self._seen):
+            return  # our own traffic / already counted
+        if mid:
+            self._seen.add(mid)
+        self.received += 1
+        self._on_event(
+            {"kind": "received", "from": origin, "callsign": callsign,
+             "type": type_name, "ts": time.time()}
+        )
+        # bi-directional: acknowledge received coalition traffic with a Receipt (but never ack an
+        # ack, or we'd loop) so the gateway/other clients see a reply flow back.
+        if (
+            self.auto_ack
+            and mid
+            and type_name != str(MessageType.RECEIPT)
+            and self._ack_unit is not None
+        ):
+            await self._publish(
+                self._ack_unit,
+                Receipt(ack_message_id=mid, status="received", note=f"ack {origin}"),
+                f"receipt → {origin}",
+            )
+            self.acked += 1
+
+    async def _run_bounded(self, coros: Iterable) -> None:
+        """Run coroutines concurrently, capped by the per-tick concurrency semaphore."""
+
+        async def _guard(coro) -> None:
+            assert self._sem is not None
+            async with self._sem:
+                await coro
+
+        await asyncio.gather(*(_guard(c) for c in coros), return_exceptions=True)
 
     # ------------------------------------------------------------------ per-tick
     async def tick(self, dt: float, tick_no: int) -> None:
         self.tick_no = tick_no
-        for u in self.units:
+        started = time.perf_counter()
+        sent_before = self.sent
+
+        for u in self.units:  # advance every track first (cheap, synchronous)
             self._advance(u, dt)
+
+        async def _emit(u: LiveUnit) -> None:  # then fan the publishes out concurrently
             await self._emit_presence(u)
             await self._behaviors(u, tick_no)
+
+        await self._run_bounded(_emit(u) for u in self.units)
+
+        # stream unit rows to the UI — sampled under stress so the table doesn't churn 500 rows/tick
+        rows = self.units[:_STRESS_UI_SAMPLE] if self.stress else self.units
+        for u in rows:
             self._on_event(
                 {
                     "kind": "unit",
@@ -201,6 +326,7 @@ class SimulatorEngine:
                     "cycles": u.cycles,
                 }
             )
+        elapsed = time.perf_counter() - started
         self._on_event(
             {
                 "kind": "stats",
@@ -208,6 +334,9 @@ class SimulatorEngine:
                 "sent": self.sent,
                 "received": self.received,
                 "tick": tick_no,
+                "rate": round((self.sent - sent_before) / elapsed, 1) if elapsed > 0 else 0.0,
+                "elapsed_ms": round(elapsed * 1000),
+                "stress": self.stress,
             }
         )
 
@@ -270,6 +399,16 @@ class SimulatorEngine:
         if "chat" in b and (tick_no + u.idx) % 6 == 0 and self.scenario.orders:
             text = self._rng.choice(self.scenario.orders)
             await self._publish(u, ChatMessage(text=text), f"chat: {text[:40]}…")
+        if "chat" in b and (tick_no + u.idx) % 7 == 0 and tick_no:  # structured GenInfo bulletin
+            await self._publish(
+                u,
+                GeneralInfo(
+                    subject="SITREP",
+                    text=f"{u.spec.callsign} on {self.scenario.name}: situation nominal",
+                    location=Location(lat=u.lat, lon=u.lon),
+                ),
+                "geninfo: SITREP",
+            )
 
     async def _emit_objective(self, u: LiveUnit) -> None:
         cx, cy = self.scenario.center
@@ -284,6 +423,16 @@ class SimulatorEngine:
             ],
         )
         await self._publish(u, body, "objective overlay")
+
+    async def _emit_chatrooms(self, u: LiveUnit) -> None:
+        body = Chatrooms(
+            rooms=[
+                ChatRoom(room_id="All Chat Rooms", name="All Chat Rooms"),
+                ChatRoom(room_id=self.scenario.network_id, name=self.scenario.name,
+                         members=[u.spec.node_id]),
+            ]
+        )
+        await self._publish(u, body, "chatrooms enumeration")
 
     # ------------------------------------------------------------------ publish/receive
     async def _publish(self, u: LiveUnit, body: object, detail: str) -> None:
@@ -300,6 +449,8 @@ class SimulatorEngine:
             return
         u.sent += 1
         self.sent += 1
+        if self.stress:
+            return  # 500 operators would flood the log — throughput is reported via "stats"
         loc = getattr(body, "location", None)
         self._on_event(
             {
@@ -338,23 +489,15 @@ class SimulatorEngine:
             g = graphics[0]
             p["lat"], p["lon"] = g.location.lat, g.location.lon
             p["description"] = getattr(body, "name", "overlay")
+        # the three extended types carry fields the flat schema keys differently
+        if isinstance(body, GeneralInfo):
+            p["description"] = body.subject  # inject maps description → GenInfo.subject
+        elif isinstance(body, Receipt):
+            p["ack_message_id"] = body.ack_message_id
+            p["description"] = body.note
+        elif isinstance(body, Chatrooms):
+            p["text"] = ",".join(r.name or r.room_id for r in body.rooms)  # comma-separated rooms
         return p
-
-    def _note_received(self, message: JdssMessage) -> None:
-        h = message.header
-        if h.originator_id in self._own_ids or h.message_id in self._seen:
-            return  # our own traffic / already counted
-        self._seen.add(h.message_id)
-        self.received += 1
-        self._on_event(
-            {
-                "kind": "received",
-                "from": h.originator_id,
-                "callsign": getattr(message.body, "callsign", None),
-                "type": str(message.type),
-                "ts": time.time(),
-            }
-        )
 
     def _status(self, text: str) -> None:
         self._on_event({"kind": "status", "text": text})
@@ -367,4 +510,8 @@ class _RxHandler:
         self._engine = engine
 
     async def handle(self, message: JdssMessage) -> None:
-        self._engine._note_received(message)
+        h = message.header
+        await self._engine._receive(
+            h.originator_id, h.message_id, str(message.type),
+            getattr(message.body, "callsign", None),
+        )

@@ -16,7 +16,7 @@ async def test_default_scenario_is_fully_compliant():
     report = await sim.run(ticks=16, tick_interval=0.0)
 
     # every AEP-76 message type appears on the network (structural compliance surface)
-    assert report.all_seven_types, report.types_observed
+    assert report.all_message_types, report.types_observed
     assert set(report.types_observed) == {str(t) for t in MessageType}
 
     # every non-monitor client delivered traffic to the command post

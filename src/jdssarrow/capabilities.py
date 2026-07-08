@@ -1,6 +1,6 @@
 """Per-node capability matrix — which message types this node may receive / emit.
 
-A small on/off permission matrix (rows = the 7 JDSS message types, columns = receive / emit),
+A small on/off permission matrix (rows = the 10 JDSSDM message types, columns = receive / emit),
 editable at runtime from the Configuration tab. Enforcement:
 
 * **receive** — an inbound message of a disallowed type is dropped on ingest (reason

@@ -34,6 +34,6 @@ def test_connect_info_has_join_coordinates(tmp_path):
         assert info["psk"] == "shared-secret"
         assert info["multicast_group"].startswith("239.")
         assert isinstance(info["port"], int)
-        assert len(info["message_types"]) == 7
+        assert len(info["message_types"]) == 10
         assert info["authority_public_key"] == pub
         assert info["frame"]["magic"] == "JDSS"

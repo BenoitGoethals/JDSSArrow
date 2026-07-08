@@ -25,6 +25,7 @@ from jdssarrow.datamodel.messages import (
     CasevacRequest,
     ChatMessage,
     ContactSighting,
+    GeneralInfo,
     JdssMessage,
     Location,
     MessageHeader,
@@ -190,7 +191,12 @@ def message_to_cot(message: JdssMessage, stale_s: int = 300) -> bytes | None:
     elif isinstance(body, ChatMessage):
         cot_type = "b-t-f"
         remarks = body.text
-    else:  # Identification, Sketch → no direct CoT event
+    elif isinstance(body, GeneralInfo):  # free-form info → GeoChat text (optionally located)
+        cot_type = "b-t-f"
+        remarks = f"{body.subject}: {body.text}" if body.subject else body.text
+        if body.location is not None:
+            lat, lon = body.location.lat, body.location.lon
+    else:  # Identification, Sketch, Receipt (ack — no native CoT), Chatrooms → no CoT event
         return None
 
     t = message.header.reporting_time

@@ -20,8 +20,8 @@ async def test_rogue_is_rejected_and_network_unaffected(mode):
     assert "rogue-1" not in report.peers_at_command_post
     assert report.rogue_rejected is True
 
-    # 4) ...and the legitimate network is entirely unaffected: all clients + all 7 types.
-    assert report.all_seven_types
+    # 4) ...and the legitimate network is entirely unaffected: all clients + all message types.
+    assert report.all_message_types
     expected_peers = sum(c for r, c in DEFAULT_ROSTER if r != "commandpost")
     assert len(report.peers_at_command_post) == expected_peers
     assert report.casevac_acks >= report.casevac_requests

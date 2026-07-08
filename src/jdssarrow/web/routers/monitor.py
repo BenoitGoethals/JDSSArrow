@@ -10,7 +10,10 @@ from jdssarrow.datamodel import symbology
 from jdssarrow.datamodel.messages import (
     CasevacRequest,
     ChatMessage,
+    ChatRoom,
+    Chatrooms,
     ContactSighting,
+    GeneralInfo,
     Identification,
     JdssMessage,
     Location,
@@ -18,6 +21,7 @@ from jdssarrow.datamodel.messages import (
     Overlay,
     OverlayGraphic,
     Presence,
+    Receipt,
 )
 from jdssarrow.datamodel.symbology import StandardIdentity
 from jdssarrow.gateway.gateway import JdssGateway
@@ -190,7 +194,9 @@ class InjectIn(BaseModel):
     ATAK EUDs, TAK servers, the dashboard and coalition multicast peers."""
 
     originator: str
-    type: str  # Presence | Identification | ContactSighting | CasevacRequest | Chat | Overlay
+    # Presence | Identification | ContactSighting | Sketch | Overlay | CasevacRequest
+    # | Chat | GenInfo | Receipt | Chatrooms
+    type: str
     callsign: str | None = None
     lat: float | None = None
     lon: float | None = None
@@ -208,6 +214,7 @@ class InjectIn(BaseModel):
     nation: str | None = None
     classification: int | None = None
     releasable_to: str | None = None
+    ack_message_id: str | None = None  # Receipt: the message_id being acknowledged
 
 
 def _inject_body(b: InjectIn) -> object:
@@ -242,6 +249,21 @@ def _inject_body(b: InjectIn) -> object:
                 sidc=symbology.sidc("control_point"), location=loc, label=b.callsign or "OBJ"
             )],
         )
+    if b.type == "GenInfo":
+        located = b.lat is not None and b.lon is not None
+        return GeneralInfo(
+            subject=b.description or "", text=b.text or "—", location=loc if located else None
+        )
+    if b.type == "Receipt":
+        return Receipt(
+            ack_message_id=b.ack_message_id or b.text or "",
+            status="received",
+            note=b.description or "",
+        )
+    if b.type == "Chatrooms":
+        # accept a comma-separated list of room names via `text`
+        names = [n.strip() for n in (b.text or "").split(",") if n.strip()]
+        return Chatrooms(rooms=[ChatRoom(room_id=n, name=n) for n in names])
     raise HTTPException(status_code=400, detail=f"unknown message type '{b.type}'")
 
 

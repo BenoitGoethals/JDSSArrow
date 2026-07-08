@@ -178,7 +178,8 @@ class SimReport:
     rogue_node: str | None = None
 
     @property
-    def all_seven_types(self) -> bool:
+    def all_message_types(self) -> bool:
+        """True if every JDSSDM message type was observed on the network."""
         return _ALL_TYPES.issubset(set(self.types_observed))
 
     @property
@@ -202,10 +203,10 @@ class SimReport:
                 f"    {c['callsign']:<12} {c['role']:<16} {c['nation']}  "
                 f"sent {c['sent_total']:<3} [{by_type}]"
             )
-        coverage = "✓ ALL" if self.all_seven_types else "✗"
+        coverage = "✓ ALL" if self.all_message_types else "✗"
         types_csv = ", ".join(sorted(self.types_observed))
         lines += [
-            f"  message types observed network-wide: {len(self.types_observed)}/7 "
+            f"  message types observed network-wide: {len(self.types_observed)}/{len(_ALL_TYPES)} "
             f"{coverage} — {types_csv}",
             f"  CASEVAC: {self.casevac_requests} requested / "
             f"{self.casevac_acks} acknowledged by medic",

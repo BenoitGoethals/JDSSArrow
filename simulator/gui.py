@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -38,7 +39,7 @@ from PyQt6.QtWidgets import (
 )
 
 from simulator.engine import SimulatorEngine
-from simulator.scenarios import SCENARIOS
+from simulator.scenarios import SCENARIOS, STRESS_OPERATORS
 
 _TYPE_COLOR = {
     "Presence": "#3a78c2",
@@ -47,6 +48,9 @@ _TYPE_COLOR = {
     "CasevacRequest": "#e08a1e",
     "Chat": "#3aa76d",
     "Overlay": "#a0a04a",
+    "GenInfo": "#5a8fbf",
+    "Receipt": "#6c8a6c",
+    "Chatrooms": "#3a9a9a",
 }
 
 
@@ -127,6 +131,13 @@ class MainWindow(QMainWindow):
         self.secure = QCheckBox("Secure — PSK / HMAC-SHA256 (uncheck for non-secure/null)")
         self.secure.setChecked(True)
 
+        self.auto_ack = QCheckBox("Bi-directional — receive coalition traffic, reply w/ Receipt")
+        self.auto_ack.setChecked(True)
+        self.auto_ack.setToolTip(
+            "In inject mode, subscribe to the gateway's live feed so incoming coalition traffic\n"
+            "appears in the 'Incoming' tab; each received message is acknowledged with a Receipt."
+        )
+
         self.transport = QComboBox()
         self.transport.addItems(["udp", "loopback"])
         self.transport.setToolTip(
@@ -148,6 +159,20 @@ class MainWindow(QMainWindow):
         self.interval.setValue(1.0)
         self.interval.setSuffix(" s / tick")
 
+        # --- stress test: clone the scenario up to N synthetic operators ---
+        self.stress = QCheckBox("Stress test")
+        self.stress.setToolTip(
+            "Clone the scenario up to N synthetic operators and hammer the gateway.\n"
+            "Best with Inject mode — 500 operators over UDP multicast spins up 500 local nodes."
+        )
+        self.stress.toggled.connect(self._stress_changed)
+        self.operators = QSpinBox()
+        self.operators.setRange(1, 5000)
+        self.operators.setValue(STRESS_OPERATORS)
+        self.operators.setSuffix(" operators")
+        self.operators.setToolTip("Number of synthetic operators to simulate under stress")
+        self.operators.setEnabled(False)
+
         self.start_btn = QPushButton("Start")
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
@@ -159,6 +184,10 @@ class MainWindow(QMainWindow):
         row1.addWidget(self.codec)
         row1.addWidget(self.classification)
         row1.addWidget(self.interval)
+        stress_row = QHBoxLayout()
+        stress_row.addWidget(self.stress)
+        stress_row.addWidget(self.operators)
+        stress_row.addStretch(1)
         buttons = QHBoxLayout()
         buttons.addWidget(self.start_btn)
         buttons.addWidget(self.stop_btn)
@@ -168,7 +197,9 @@ class MainWindow(QMainWindow):
         form.addRow("Mode", self.mode)
         form.addRow("Gateway URL", self.gateway_url)
         form.addRow("Security", self.secure)
+        form.addRow("Duplex", self.auto_ack)
         form.addRow("Transport / codec / class / rate", _wrap(row1))
+        form.addRow("Load", _wrap(stress_row))
         form.addRow("Network id", self.network_id)
         form.addRow("Coalition PSK", self.psk)
         form.addRow("", _wrap(buttons))
@@ -182,6 +213,9 @@ class MainWindow(QMainWindow):
         self.gateway_url.setEnabled(inject)
         for w in (self.secure, self.transport, self.network_id, self.psk):
             w.setEnabled(not inject)
+
+    def _stress_changed(self, on: bool) -> None:
+        self.operators.setEnabled(on)
 
     def _unit_table(self) -> QWidget:
         box = QGroupBox("Units")
@@ -230,6 +264,8 @@ class MainWindow(QMainWindow):
             network_id=self.network_id.text().strip() or None,
             psk=self.psk.text(),
             classification=self.classification.currentIndex(),
+            stress=self.operators.value() if self.stress.isChecked() else 0,
+            auto_ack=self.auto_ack.isChecked(),
         )
         self._worker.event.connect(self._on_event)
         self._worker.finished.connect(self._on_finished)
@@ -251,9 +287,11 @@ class MainWindow(QMainWindow):
         self._worker = None
 
     def _set_inputs(self, on: bool) -> None:
-        for w in (self.scenario, self.mode, self.gateway_url, self.secure, self.transport,
-                  self.codec, self.network_id, self.psk, self.classification, self.interval):
+        for w in (self.scenario, self.mode, self.gateway_url, self.secure, self.auto_ack,
+                  self.transport, self.codec, self.network_id, self.psk, self.classification,
+                  self.interval, self.stress):
             w.setEnabled(on)
+        self.operators.setEnabled(on and self.stress.isChecked())
 
     # ------------------------------------------------------------------ events
     def _on_event(self, e: dict) -> None:
@@ -295,9 +333,12 @@ class MainWindow(QMainWindow):
         self.recv_log.appendPlainText(f"{ts}  ▼ {e['from']}{cs:<12} {e['type']}")
 
     def _update_stats(self, e: dict) -> None:
-        self.statusBar().showMessage(
+        msg = (
             f"tick {e['tick']} · {e['nodes']} units · {e['sent']} sent · {e['received']} received"
         )
+        if e.get("stress"):  # under load, show throughput + how long the tick's fan-out took
+            msg += f" · {e.get('rate', 0):.0f} msg/s · tick {e.get('elapsed_ms', 0)} ms"
+        self.statusBar().showMessage(msg)
 
 
 def _wrap(layout) -> QWidget:

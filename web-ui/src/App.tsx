@@ -53,6 +53,9 @@ const TYPE_COLOR: Record<string, string> = {
   Chat: "#3aa76d",
   Sketch: "#4aa0a0",
   Overlay: "#a0a04a",
+  GenInfo: "#5a8fbf",
+  Receipt: "#6c8a6c",
+  Chatrooms: "#3a9a9a",
 };
 const typeColor = (t?: string) => (t && TYPE_COLOR[t]) || "#7c8a99";
 
