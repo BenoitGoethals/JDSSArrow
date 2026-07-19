@@ -143,7 +143,56 @@ _NARVIK = Scenario(
     ],
 )
 
-SCENARIOS: dict[str, Scenario] = {_EBEN.key: _EBEN, _NARVIK.key: _NARVIK}
+# --------------------------------------------------------------------------- Luxembourg
+_LUXEMBOURG = Scenario(
+    key="luxembourg",
+    name="Combined-arms exercise: seizure of Luxembourg City",
+    description=(
+        "Fictional NATO training vignette — two mechanised brigades converge on Luxembourg City "
+        "from Belgium and France while the Special Operations Regiment (SOR) air-assaults Findel "
+        "airport and the government quarter ahead of the link-up."
+    ),
+    network_id="exercise-lion",
+    center=(49.6116, 6.1319),
+    units=[
+        UnitSpec("jtf-hq", "JTF-HQ", "BEL", "commandpost", "control_point",
+                 [(49.5520, 5.9520), (49.5560, 5.9600), (49.5490, 5.9640), (49.5470, 5.9560)],
+                 0.7, frozenset({"presence", "chat", "overlay"}), "Joint Task Force HQ"),
+        UnitSpec("bde1-inf", "BISON-1", "BEL", "mechanised_infantry", "dismounted_infantry",
+                 [(49.5486, 5.8814), (49.5620, 5.9100), (49.5750, 5.9350), (49.5600, 5.9000)],
+                 3.2, frozenset({"presence", "contact", "casevac"}), "1st Mechanised Brigade (west axis, via Pétange)"),
+        UnitSpec("bde1-med", "BISON-MED", "BEL", "medic", "medic",
+                 [(49.5560, 5.8950), (49.5610, 5.9050), (49.5540, 5.9120), (49.5500, 5.9020)],
+                 1.4, frozenset({"presence", "casevac"}), "1st Mechanised Brigade"),
+        UnitSpec("bde2-inf", "WALLON-1", "FRA", "mechanised_infantry", "dismounted_infantry",
+                 [(49.4958, 5.9806), (49.5100, 6.0200), (49.5320, 6.0450), (49.5150, 6.0050)],
+                 3.2, frozenset({"presence", "contact", "casevac"}), "2nd Mechanised Brigade (south axis, via Esch-sur-Alzette)"),
+        UnitSpec("bde2-med", "WALLON-MED", "FRA", "medic", "medic",
+                 [(49.5050, 6.0100), (49.5100, 6.0180), (49.5030, 6.0230), (49.4990, 6.0150)],
+                 1.4, frozenset({"presence", "casevac"}), "2nd Mechanised Brigade"),
+        UnitSpec("sor-1", "SOR-1", "BEL", "air_assault_infantry", "dismounted_infantry",
+                 [(49.6233, 6.2044), (49.6255, 6.2090), (49.6210, 6.2110), (49.6195, 6.2060)],
+                 4.5, frozenset({"presence", "contact", "casevac"}), "Special Operations Regiment (Findel airport)"),
+        UnitSpec("sor-2", "SOR-2", "BEL", "air_assault_infantry", "dismounted_infantry",
+                 [(49.6106, 6.1296), (49.6120, 6.1315), (49.6098, 6.1335), (49.6088, 6.1305)],
+                 4.5, frozenset({"presence", "contact", "chat"}), "Special Operations Regiment (government quarter)"),
+    ],
+    enemies=[
+        Enemy("Grand Ducal Guard detachment, Palace", 49.6106, 6.1296),
+        Enemy("Gendarmerie post, Findel", 49.6233, 6.2044),
+        Enemy("Armée luxembourgeoise piquet, Sanem", 49.5460, 5.9440),
+        Enemy("Armée luxembourgeoise piquet, Hesperange", 49.5750, 6.1500),
+    ],
+    orders=[
+        "SOR: heliborne assault on Findel, secure the runway and terminal for follow-on lift.",
+        "SOR: simultaneous lift onto the government quarter, secure the Palace and key ministries.",
+        "BISON: cross at Pétange, advance via Differdange/Bascharage, converge on Luxembourg City.",
+        "WALLON: cross at Esch-sur-Alzette, advance via Dudelange, screen the southern approach.",
+        "JTF-HQ: coordinate link-up in Luxembourg City centre, report SOR objectives secured.",
+    ],
+)
+
+SCENARIOS: dict[str, Scenario] = {_EBEN.key: _EBEN, _NARVIK.key: _NARVIK, _LUXEMBOURG.key: _LUXEMBOURG}
 
 #: default cohort size for the stress test.
 STRESS_OPERATORS = 500
